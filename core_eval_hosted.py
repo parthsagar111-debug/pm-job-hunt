@@ -639,15 +639,23 @@ Gap: [biggest gap or None]"""
 
 
 def _load_api_key() -> str:
-    """Load Anthropic API key from config.py in the same folder."""
+    """Load Anthropic API key — env var first (GitHub Actions), then config.py (local)."""
+    # GitHub Actions / hosted: key is in ANTHROPIC_API_KEY environment variable
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if key:
+        return key
+    # Local fallback: read from config.py in the same folder
     import importlib, sys as _sys
     base_dir = os.path.dirname(os.path.abspath(__file__))
     if base_dir not in _sys.path:
         _sys.path.insert(0, base_dir)
-    cfg = importlib.import_module("config")
-    key = getattr(cfg, "ANTHROPIC_API_KEY", "")
+    try:
+        cfg = importlib.import_module("config")
+        key = getattr(cfg, "ANTHROPIC_API_KEY", "")
+    except ImportError:
+        pass
     if not key or key == "PASTE_YOUR_ANTHROPIC_KEY_HERE":
-        raise RuntimeError("Add your Anthropic API key to config.py")
+        raise RuntimeError("Set ANTHROPIC_API_KEY env var or add key to config.py")
     return key
 
 
