@@ -1,0 +1,10 @@
+requests
+beautifulsoup4
+lxml
+selenium
+webdriver-manager
+schedule
+curl_cffi
+playwright
+gspread
+google-auth
