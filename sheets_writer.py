@@ -19,7 +19,12 @@ See README for the full walkthrough.
 
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def _now_ist():
+    return datetime.now(IST)
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -125,7 +130,7 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     ws_maybe = _ensure_tab(sh, TAB_MAYBE, HEADERS_EVAL)
     ws_skip  = _ensure_tab(sh, TAB_SKIP,  HEADERS_EVAL)
 
-    now       = datetime.now()
+    now       = _now_ist()
     month_str = now.strftime("%Y-%m")
     date_str  = now.strftime("%Y-%m-%d %H:%M")
 
@@ -186,7 +191,7 @@ def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     ws_maybe = _ensure_tab(sh, TAB_MAYBE, HEADERS_GLOBAL)
     ws_skip  = _ensure_tab(sh, TAB_SKIP,  HEADERS_GLOBAL)
 
-    now       = datetime.now()
+    now       = _now_ist()
     month_str = now.strftime("%Y-%m")
     date_str  = now.strftime("%Y-%m-%d %H:%M")
 
