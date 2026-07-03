@@ -292,6 +292,15 @@ RELOCATION_SIGNALS = [
     "work visa provided", "sponsorship available",
 ]
 
+VISA_SIGNALS = [
+    "visa sponsorship", "visa support", "we sponsor",
+    "we will sponsor", "we are able to sponsor",
+    "immigration support", "immigration assistance",
+    "h1b", "h-1b", "tier 2", "skilled worker visa",
+    "work visa provided", "sponsorship available",
+    "work authorization provided", "we provide visa",
+]
+
 # Phrases that NEGATE a relocation/visa signal — check these first
 RELOCATION_DENY_SIGNALS = [
     "do not offer visa", "does not offer visa",
