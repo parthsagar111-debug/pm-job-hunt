@@ -33,9 +33,10 @@ def push(title: str, message: str, priority: str = "default") -> bool:
             f"https://ntfy.sh/{topic}",
             data=message.encode("utf-8"),
             headers={
-                "Title":    title,
+                "Title":    title.encode("utf-8"),
                 "Priority": priority,
                 "Tags":     "briefcase",
+                "Content-Type": "text/plain; charset=utf-8",
             },
             timeout=10,
         )
@@ -48,9 +49,9 @@ def push(title: str, message: str, priority: str = "default") -> bool:
 
 def run_summary(script_name: str, n_apply: int, n_maybe: int, n_skip: int):
     """Send a post-run summary notification."""
-    title   = f"🗂 {script_name} — run complete"
+    title   = f"{script_name} — run complete"
     message = (
-        f"✅ Apply: {n_apply}  |  🤔 Maybe: {n_maybe}  |  ❌ Skip: {n_skip}\n"
+        f"Apply: {n_apply}  |  Maybe: {n_maybe}  |  Skip: {n_skip}\n"
         f"Check your Google Sheet for details."
     )
     priority = "high" if n_apply > 0 else "default"
