@@ -541,7 +541,7 @@ def main():
             hard_skipped += 1
             continue
         job["relocation_confirmed"] = any(s in jd_lower for s in RELOCATION_SIGNALS)
-        job["visa_confirmed"]       = any(s in jd_lower for s in RELOCATION_SIGNALS)
+        job["visa_confirmed"]       = any(s in jd_lower for s in VISA_SIGNALS)
         kept.append(job)
         print("ok")
         time.sleep(0.5)
