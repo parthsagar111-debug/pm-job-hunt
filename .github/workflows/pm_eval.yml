@@ -1,9 +1,7 @@
 name: PM Eval — India Jobs
 
 on:
-  schedule:
-    - cron: '0 * * * *'     # every 1 hour
-  workflow_dispatch:          # manual trigger from GitHub UI anytime
+  workflow_dispatch:   # triggered externally by cron-job.org via GitHub API
 
 jobs:
   run:
@@ -13,13 +11,6 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: Keep repo active (prevents GitHub disabling scheduled workflows)
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          git commit --allow-empty -m "keep-alive $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push origin master
 
       - name: Set up Python
         uses: actions/setup-python@v5
