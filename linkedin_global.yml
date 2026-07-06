@@ -1,0 +1,41 @@
+name: LinkedIn Global — Worldwide PM Jobs
+
+on:
+  schedule:
+    - cron: '30 */2 * * *'  # every 2 hours, offset by 30 mins from pm_eval
+  workflow_dispatch:          # manual trigger from GitHub UI anytime
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Keep repo active (prevents GitHub disabling scheduled workflows)
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git commit --allow-empty -m "keep-alive $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin master
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements_hosted.txt
+
+      - name: Install Playwright browser
+        run: playwright install chromium --with-deps
+
+      - name: Run LinkedIn Global
+        env:
+          ANTHROPIC_API_KEY:           ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GLOBAL_SPREADSHEET_ID:       ${{ secrets.GLOBAL_SPREADSHEET_ID }}
+          NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
+        run: python linkedin_global_hosted.py
