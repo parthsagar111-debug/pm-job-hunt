@@ -2,7 +2,8 @@ name: LinkedIn Global — Worldwide PM Jobs
 
 on:
   schedule:
-    - cron: '30 */2 * * *'  # every 2 hours, offset by 30 mins from pm_eval
+    - cron: '30 4 * * *'    # 10:00 AM IST (4:30 AM UTC)
+    - cron: '30 16 * * *'   # 10:00 PM IST (4:30 PM UTC)
   workflow_dispatch:          # manual trigger from GitHub UI anytime
 
 jobs:
