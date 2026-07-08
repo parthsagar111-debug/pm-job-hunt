@@ -52,14 +52,6 @@ HEADERS_GLOBAL = [
 # AUTH
 # ─────────────────────────────────────────────
 def _get_client() -> gspread.Client:
-    """
-    Supports two auth modes:
-    - Env var GOOGLE_SERVICE_ACCOUNT_JSON (GitHub Actions / Render)
-      Set this secret to the full contents of your service account JSON file.
-    - Local JSON file path (local testing)
-      Set env var GOOGLE_SERVICE_ACCOUNT_FILE to the path, or place
-      service_account.json in the same folder as this script.
-    """
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     if sa_json:
         info  = json.loads(sa_json)
@@ -74,7 +66,6 @@ def _get_client() -> gspread.Client:
 # SHEET SETUP
 # ─────────────────────────────────────────────
 def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Worksheet:
-    """Get tab by name, creating it with headers if it doesn't exist yet."""
     try:
         return sh.worksheet(name)
     except gspread.WorksheetNotFound:
@@ -89,12 +80,9 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
 
 
 def _clean_url(url: str) -> str:
-    """Strip query parameters — same job can appear with ?refId=xxx&trackingId=yyy appended."""
     return url.split("?")[0].strip() if url else ""
 
 def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
-    """Read all URLs already in the sheet (all 3 tabs) for dedup.
-    Reads only the URL column directly — fast and reliable on large sheets."""
     seen = set()
     for tab in (TAB_APPLY, TAB_MAYBE, TAB_SKIP):
         try:
@@ -103,11 +91,11 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
             if not header:
                 continue
             try:
-                url_col = header.index("URL") + 1  # gspread is 1-indexed
-                urls = ws.col_values(url_col)[1:]   # skip header row
+                url_col = header.index("URL") + 1
+                urls = ws.col_values(url_col)[1:]
                 seen.update(_clean_url(u) for u in urls if u.strip())
             except ValueError:
-                pass  # URL column not found in this tab yet
+                pass
         except gspread.WorksheetNotFound:
             pass
         except Exception as e:
@@ -119,16 +107,11 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
 # MAIN WRITE FUNCTION — pm_eval
 # ─────────────────────────────────────────────
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
-    """
-    Write evaluated pm_eval jobs to Google Sheet.
-    jobs: list of dicts with keys: title, company, location, source,
-          url, evaluation={decision, reason, gap}
-
-    Returns (n_apply, n_maybe, n_skip) counts of newly written rows.
-    """
     client = _get_client()
     sh     = client.open_by_key(spreadsheet_id)
     seen   = _load_seen_urls(sh)
+    print(f"  [DEBUG] sample seen: {sorted(list(seen))[:3]}")
+    print(f"  [DEBUG] sample job url: {repr(jobs[0].get('url','')) if jobs else 'no jobs'}")
 
     ws_apply = _ensure_tab(sh, TAB_APPLY, HEADERS_EVAL)
     ws_maybe = _ensure_tab(sh, TAB_MAYBE, HEADERS_EVAL)
@@ -171,7 +154,7 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     if rows_maybe: ws_maybe.append_rows(rows_maybe, value_input_option="USER_ENTERED")
     if rows_skip:  ws_skip.append_rows(rows_skip,  value_input_option="USER_ENTERED")
 
-    print(f"  📊 Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
+    print(f"  Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
     return len(rows_apply), len(rows_maybe), len(rows_skip)
 
 
@@ -179,14 +162,6 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
 # MAIN WRITE FUNCTION — linkedin_global
 # ─────────────────────────────────────────────
 def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
-    """
-    Write evaluated linkedin_global jobs to Google Sheet.
-    jobs: list of dicts with keys: title, company, location, source,
-          url, relocation_confirmed, visa_confirmed,
-          evaluation={decision, reason, gap}
-
-    Returns (n_apply, n_maybe, n_skip) counts of newly written rows.
-    """
     client = _get_client()
     sh     = client.open_by_key(spreadsheet_id)
     seen   = _load_seen_urls(sh)
@@ -199,40 +174,4 @@ def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     month_str = now.strftime("%Y-%m")
     date_str  = now.strftime("%Y-%m-%d %H:%M")
 
-    rows_apply, rows_maybe, rows_skip = [], [], []
-
-    for job in jobs:
-        url = _clean_url(job.get("url", ""))
-        if not url or url in seen:
-            continue
-        seen.add(url)
-
-        ev  = job.get("evaluation", {})
-        dec = ev.get("decision", "Skip")
-        row = [
-            month_str,
-            date_str,
-            job.get("title", ""),
-            job.get("company", ""),
-            job.get("location", ""),
-            job.get("source", ""),
-            dec,
-            ev.get("reason", ""),
-            ev.get("gap", ""),
-            "✅" if job.get("relocation_confirmed") else "—",
-            "✅" if job.get("visa_confirmed")       else "—",
-            url,
-        ]
-        if dec == "Apply":
-            rows_apply.append(row)
-        elif dec == "Maybe":
-            rows_maybe.append(row)
-        else:
-            rows_skip.append(row)
-
-    if rows_apply: ws_apply.append_rows(rows_apply, value_input_option="USER_ENTERED")
-    if rows_maybe: ws_maybe.append_rows(rows_maybe, value_input_option="USER_ENTERED")
-    if rows_skip:  ws_skip.append_rows(rows_skip,  value_input_option="USER_ENTERED")
-
-    print(f"  📊 Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
-    return len(rows_apply), len(rows_maybe), len(rows_skip)
+    rows_apply, rows_maybe,
