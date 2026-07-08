@@ -89,26 +89,28 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
 
 
 def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
-    """Read all URLs already in the sheet (all 3 tabs) for dedup."""
+    """Read all URLs already in the sheet (all 3 tabs) for dedup.
+    Reads only the URL column directly — fast and reliable on large sheets."""
     seen = set()
+    # URL is the last column in both HEADERS_EVAL (col 10) and HEADERS_GLOBAL (col 12)
     for tab in (TAB_APPLY, TAB_MAYBE, TAB_SKIP):
         try:
-            ws   = sh.worksheet(tab)
-            vals = ws.col_values(1)   # temporarily read col A
-            # URL is last column — get it properly
-            all_vals = ws.get_all_values()
-            if not all_vals:
+            ws = sh.worksheet(tab)
+            # Get header to find URL column index
+            header = ws.row_values(1)
+            if not header:
                 continue
-            header = all_vals[0]
             try:
-                url_idx = header.index("URL")
-                for row in all_vals[1:]:
-                    if len(row) > url_idx and row[url_idx]:
-                        seen.add(row[url_idx])
+                url_col = header.index("URL") + 1  # gspread is 1-indexed
+                urls = ws.col_values(url_col)[1:]   # skip header row
+                seen.update(u.strip() for u in urls if u.strip())
             except ValueError:
-                pass
+                pass  # URL column not found in this tab yet
         except gspread.WorksheetNotFound:
             pass
+        except Exception as e:
+            print(f"  [sheets] Warning: dedup read failed for {tab}: {e}")
+    print(f"  [sheets] Dedup: {len(seen)} existing URLs loaded")
     return seen
 
 # ─────────────────────────────────────────────
