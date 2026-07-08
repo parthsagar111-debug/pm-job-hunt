@@ -1,20 +1,5 @@
 """
 sheets_writer.py — shared Google Sheets output for pm_eval and linkedin_global
-==============================================================================
-Writes evaluated jobs to a Google Sheet with 3 permanent tabs:
-  Apply / Maybe / Skip
-
-Each row includes a Month column (e.g. "2026-07") so you can filter
-by month within each tab. No new tabs are created over time — just filter.
-
-Setup (one-time):
-  1. Google Cloud project → enable Google Sheets API
-  2. Create a service account → download JSON key
-  3. Share both Google Sheets with the service account email (Editor)
-  4. Set env var GOOGLE_SERVICE_ACCOUNT_JSON = full contents of JSON key
-     (paste entire JSON as the secret value in GitHub Actions)
-
-See README for the full walkthrough.
 """
 
 import os
@@ -31,12 +16,10 @@ from google.oauth2.service_account import Credentials
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# Tab names — fixed, never change
 TAB_APPLY = "Apply"
 TAB_MAYBE = "Maybe"
 TAB_SKIP  = "Skip"
 
-# Column headers per tab
 HEADERS_EVAL = [
     "Month", "Date Found", "Title", "Company", "Location",
     "Source", "Decision", "Reason", "Gap", "URL",
@@ -48,9 +31,6 @@ HEADERS_GLOBAL = [
     "Relocation", "Visa Sponsorship", "URL",
 ]
 
-# ─────────────────────────────────────────────
-# AUTH
-# ─────────────────────────────────────────────
 def _get_client() -> gspread.Client:
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     if sa_json:
@@ -62,9 +42,6 @@ def _get_client() -> gspread.Client:
         creds = Credentials.from_service_account_file(path, scopes=SCOPES)
     return gspread.authorize(creds)
 
-# ─────────────────────────────────────────────
-# SHEET SETUP
-# ─────────────────────────────────────────────
 def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Worksheet:
     try:
         return sh.worksheet(name)
@@ -72,12 +49,10 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
         ws = sh.add_worksheet(title=name, rows=5000, cols=len(headers))
         ws.append_row(headers, value_input_option="USER_ENTERED")
         try:
-            ws.format(f"A1:{chr(64 + len(headers))}1",
-                      {"textFormat": {"bold": True}})
+            ws.format(f"A1:{chr(64 + len(headers))}1", {"textFormat": {"bold": True}})
         except Exception:
             pass
         return ws
-
 
 def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
@@ -87,15 +62,21 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
     for tab in (TAB_APPLY, TAB_MAYBE, TAB_SKIP):
         try:
             ws = sh.worksheet(tab)
+            # Read full first row to find URL column exactly
             header = ws.row_values(1)
             if not header:
                 continue
-            try:
-                url_col = header.index("URL") + 1
-                urls = ws.col_values(url_col)[1:]
-                seen.update(_clean_url(u) for u in urls if u.strip())
-            except ValueError:
-                pass
+            # Find URL column (1-indexed for gspread)
+            url_col = None
+            for i, h in enumerate(header):
+                if h.strip() == "URL":
+                    url_col = i + 1
+                    break
+            if url_col is None:
+                print(f"  [sheets] Warning: URL column not found in {tab}, headers={header}")
+                continue
+            urls = ws.col_values(url_col)[1:]  # skip header row
+            seen.update(_clean_url(u) for u in urls if u.strip())
         except gspread.WorksheetNotFound:
             pass
         except Exception as e:
@@ -103,15 +84,10 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
     print(f"  [sheets] Dedup: {len(seen)} existing URLs loaded")
     return seen
 
-# ─────────────────────────────────────────────
-# MAIN WRITE FUNCTION — pm_eval
-# ─────────────────────────────────────────────
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()
     sh     = client.open_by_key(spreadsheet_id)
     seen   = _load_seen_urls(sh)
-    print(f"  [DEBUG] sample seen: {sorted(list(seen))[:3]}")
-    print(f"  [DEBUG] sample job url: {repr(jobs[0].get('url','')) if jobs else 'no jobs'}")
 
     ws_apply = _ensure_tab(sh, TAB_APPLY, HEADERS_EVAL)
     ws_maybe = _ensure_tab(sh, TAB_MAYBE, HEADERS_EVAL)
@@ -132,35 +108,23 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
         ev  = job.get("evaluation", {})
         dec = ev.get("decision", "Skip")
         row = [
-            month_str,
-            date_str,
-            job.get("title", ""),
-            job.get("company", ""),
-            job.get("location", ""),
-            job.get("source", ""),
-            dec,
-            ev.get("reason", ""),
-            ev.get("gap", ""),
-            url,
+            month_str, date_str,
+            job.get("title", ""), job.get("company", ""),
+            job.get("location", ""), job.get("source", ""),
+            dec, ev.get("reason", ""), ev.get("gap", ""), url,
         ]
-        if dec == "Apply":
-            rows_apply.append(row)
-        elif dec == "Maybe":
-            rows_maybe.append(row)
-        else:
-            rows_skip.append(row)
+        if dec == "Apply":   rows_apply.append(row)
+        elif dec == "Maybe": rows_maybe.append(row)
+        else:                rows_skip.append(row)
 
     if rows_apply: ws_apply.append_rows(rows_apply, value_input_option="USER_ENTERED")
     if rows_maybe: ws_maybe.append_rows(rows_maybe, value_input_option="USER_ENTERED")
-    if rows_skip:  ws_skip.append_rows(rows_skip,  value_input_option="USER_ENTERED")
+    if rows_skip:  ws_skip.append_rows(rows_skip,   value_input_option="USER_ENTERED")
 
     print(f"  Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
     return len(rows_apply), len(rows_maybe), len(rows_skip)
 
 
-# ─────────────────────────────────────────────
-# MAIN WRITE FUNCTION — linkedin_global
-# ─────────────────────────────────────────────
 def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()
     sh     = client.open_by_key(spreadsheet_id)
@@ -174,4 +138,32 @@ def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     month_str = now.strftime("%Y-%m")
     date_str  = now.strftime("%Y-%m-%d %H:%M")
 
-    rows_apply, rows_maybe,
+    rows_apply, rows_maybe, rows_skip = [], [], []
+
+    for job in jobs:
+        url = _clean_url(job.get("url", ""))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+
+        ev  = job.get("evaluation", {})
+        dec = ev.get("decision", "Skip")
+        row = [
+            month_str, date_str,
+            job.get("title", ""), job.get("company", ""),
+            job.get("location", ""), job.get("source", ""),
+            dec, ev.get("reason", ""), ev.get("gap", ""),
+            "Yes" if job.get("relocation_confirmed") else "No",
+            "Yes" if job.get("visa_confirmed") else "No",
+            url,
+        ]
+        if dec == "Apply":   rows_apply.append(row)
+        elif dec == "Maybe": rows_maybe.append(row)
+        else:                rows_skip.append(row)
+
+    if rows_apply: ws_apply.append_rows(rows_apply, value_input_option="USER_ENTERED")
+    if rows_maybe: ws_maybe.append_rows(rows_maybe, value_input_option="USER_ENTERED")
+    if rows_skip:  ws_skip.append_rows(rows_skip,   value_input_option="USER_ENTERED")
+
+    print(f"  Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
+    return len(rows_apply), len(rows_maybe), len(rows_skip)
