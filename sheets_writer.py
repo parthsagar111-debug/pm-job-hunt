@@ -88,22 +88,24 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
         return ws
 
 
+def _clean_url(url: str) -> str:
+    """Strip query parameters — same job can appear with ?refId=xxx&trackingId=yyy appended."""
+    return url.split("?")[0].strip() if url else ""
+
 def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
     """Read all URLs already in the sheet (all 3 tabs) for dedup.
     Reads only the URL column directly — fast and reliable on large sheets."""
     seen = set()
-    # URL is the last column in both HEADERS_EVAL (col 10) and HEADERS_GLOBAL (col 12)
     for tab in (TAB_APPLY, TAB_MAYBE, TAB_SKIP):
         try:
             ws = sh.worksheet(tab)
-            # Get header to find URL column index
             header = ws.row_values(1)
             if not header:
                 continue
             try:
                 url_col = header.index("URL") + 1  # gspread is 1-indexed
                 urls = ws.col_values(url_col)[1:]   # skip header row
-                seen.update(u.strip() for u in urls if u.strip())
+                seen.update(_clean_url(u) for u in urls if u.strip())
             except ValueError:
                 pass  # URL column not found in this tab yet
         except gspread.WorksheetNotFound:
@@ -139,7 +141,7 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     rows_apply, rows_maybe, rows_skip = [], [], []
 
     for job in jobs:
-        url = job.get("url", "")
+        url = _clean_url(job.get("url", ""))
         if not url or url in seen:
             continue
         seen.add(url)
@@ -200,7 +202,7 @@ def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     rows_apply, rows_maybe, rows_skip = [], [], []
 
     for job in jobs:
-        url = job.get("url", "")
+        url = _clean_url(job.get("url", ""))
         if not url or url in seen:
             continue
         seen.add(url)
