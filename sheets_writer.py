@@ -4,6 +4,7 @@ sheets_writer.py — shared Google Sheets output for pm_eval and linkedin_global
 
 import os
 import json
+import re
 from datetime import datetime, timezone, timedelta
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -31,6 +32,10 @@ HEADERS_GLOBAL = [
     "Relocation", "Visa Sponsorship", "URL",
 ]
 
+_URL_PATTERN = re.compile(
+    r'https?://(www\.)?(linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/)\S+'
+)
+
 def _get_client() -> gspread.Client:
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     if sa_json:
@@ -43,40 +48,38 @@ def _get_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Worksheet:
+    """Get or create tab. Always ensures row 1 matches expected headers exactly."""
     try:
-        return sh.worksheet(name)
+        ws = sh.worksheet(name)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=name, rows=5000, cols=len(headers))
-        ws.append_row(headers, value_input_option="USER_ENTERED")
+
+    # Always verify and fix header row — makes all tabs uniform regardless of history
+    existing_header = ws.row_values(1)
+    if existing_header != headers:
+        print(f"  [sheets] Fixing headers on '{name}' tab")
+        ws.update("A1", [headers], value_input_option="USER_ENTERED")
         try:
             ws.format(f"A1:{chr(64 + len(headers))}1", {"textFormat": {"bold": True}})
         except Exception:
             pass
-        return ws
+
+    return ws
 
 def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
 
 def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
+    """Scan every cell in all 3 tabs for job URLs — immune to column misalignment."""
     seen = set()
     for tab in (TAB_APPLY, TAB_MAYBE, TAB_SKIP):
         try:
             ws = sh.worksheet(tab)
-            # Read full first row to find URL column exactly
-            header = ws.row_values(1)
-            if not header:
-                continue
-            # Find URL column (1-indexed for gspread)
-            url_col = None
-            for i, h in enumerate(header):
-                if h.strip() == "URL":
-                    url_col = i + 1
-                    break
-            if url_col is None:
-                print(f"  [sheets] Warning: URL column not found in {tab}, headers={header}")
-                continue
-            urls = ws.col_values(url_col)[1:]  # skip header row
-            seen.update(_clean_url(u) for u in urls if u.strip())
+            all_values = ws.get_all_values()
+            for row in all_values[1:]:  # skip header row
+                for cell in row:
+                    if cell and _URL_PATTERN.match(cell.strip()):
+                        seen.add(_clean_url(cell.strip()))
         except gspread.WorksheetNotFound:
             pass
         except Exception as e:
@@ -104,7 +107,6 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
         if not url or url in seen:
             continue
         seen.add(url)
-
         ev  = job.get("evaluation", {})
         dec = ev.get("decision", "Skip")
         row = [
@@ -145,7 +147,6 @@ def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
         if not url or url in seen:
             continue
         seen.add(url)
-
         ev  = job.get("evaluation", {})
         dec = ev.get("decision", "Skip")
         row = [
