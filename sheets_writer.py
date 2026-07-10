@@ -48,23 +48,26 @@ def _get_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Worksheet:
-    """Get or create tab. Always ensures row 1 matches expected headers exactly."""
+    """Get or create tab. Only writes headers if tab is new or row 1 is completely empty."""
     try:
         ws = sh.worksheet(name)
+        # Only fix headers if row 1 is empty — never overwrite on existing data tabs
+        first_cell = ws.cell(1, 1).value or ""
+        if not first_cell.strip():
+            ws.update("A1", [headers], value_input_option="USER_ENTERED")
+            try:
+                ws.format(f"A1:{chr(64 + len(headers))}1", {"textFormat": {"bold": True}})
+            except Exception:
+                pass
+        return ws
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=name, rows=5000, cols=len(headers))
-
-    # Always verify and fix header row — makes all tabs uniform regardless of history
-    existing_header = ws.row_values(1)
-    if existing_header != headers:
-        print(f"  [sheets] Fixing headers on '{name}' tab")
-        ws.update("A1", [headers], value_input_option="USER_ENTERED")
+        ws.append_row(headers, value_input_option="USER_ENTERED")
         try:
             ws.format(f"A1:{chr(64 + len(headers))}1", {"textFormat": {"bold": True}})
         except Exception:
             pass
-
-    return ws
+        return ws
 
 def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
