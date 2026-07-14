@@ -5,6 +5,7 @@ sheets_writer.py — shared Google Sheets output for pm_eval and linkedin_global
 import os
 import json
 import re
+import time
 from datetime import datetime, timezone, timedelta
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -14,6 +15,29 @@ def _now_ist():
 
 import gspread
 from google.oauth2.service_account import Credentials
+
+def _with_retry(fn, *args, retries: int = 5, base_delay: float = 1.5, **kwargs):
+    """Call fn with exponential backoff on transient Google API errors (429/500/502/503)."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            status = None
+            try:
+                status = e.response.status_code
+            except Exception:
+                pass
+            if status in (429, 500, 502, 503) and attempt < retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"  [sheets] Transient API error ({status}), retrying in {delay:.1f}s "
+                      f"(attempt {attempt + 1}/{retries})...")
+                time.sleep(delay)
+                last_err = e
+                continue
+            raise
+    if last_err:
+        raise last_err
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -78,7 +102,7 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
     for tab in (TAB_APPLY, TAB_MAYBE, TAB_SKIP):
         try:
             ws = sh.worksheet(tab)
-            all_values = ws.get_all_values()
+            all_values = _with_retry(ws.get_all_values)
             for row in all_values[1:]:  # skip header row
                 for cell in row:
                     if cell and _URL_PATTERN.match(cell.strip()):
@@ -92,7 +116,7 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
 
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()
-    sh     = client.open_by_key(spreadsheet_id)
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
     seen   = _load_seen_urls(sh)
 
     ws_apply = _ensure_tab(sh, TAB_APPLY, HEADERS_EVAL)
@@ -122,9 +146,9 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
         elif dec == "Maybe": rows_maybe.append(row)
         else:                rows_skip.append(row)
 
-    if rows_apply: ws_apply.append_rows(rows_apply, value_input_option="USER_ENTERED")
-    if rows_maybe: ws_maybe.append_rows(rows_maybe, value_input_option="USER_ENTERED")
-    if rows_skip:  ws_skip.append_rows(rows_skip,   value_input_option="USER_ENTERED")
+    if rows_apply: _with_retry(ws_apply.append_rows, rows_apply, value_input_option="USER_ENTERED")
+    if rows_maybe: _with_retry(ws_maybe.append_rows, rows_maybe, value_input_option="USER_ENTERED")
+    if rows_skip:  _with_retry(ws_skip.append_rows,  rows_skip,  value_input_option="USER_ENTERED")
 
     print(f"  Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
     return len(rows_apply), len(rows_maybe), len(rows_skip)
@@ -132,7 +156,7 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
 
 def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()
-    sh     = client.open_by_key(spreadsheet_id)
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
     seen   = _load_seen_urls(sh)
 
     ws_apply = _ensure_tab(sh, TAB_APPLY, HEADERS_GLOBAL)
@@ -165,9 +189,9 @@ def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
         elif dec == "Maybe": rows_maybe.append(row)
         else:                rows_skip.append(row)
 
-    if rows_apply: ws_apply.append_rows(rows_apply, value_input_option="USER_ENTERED")
-    if rows_maybe: ws_maybe.append_rows(rows_maybe, value_input_option="USER_ENTERED")
-    if rows_skip:  ws_skip.append_rows(rows_skip,   value_input_option="USER_ENTERED")
+    if rows_apply: _with_retry(ws_apply.append_rows, rows_apply, value_input_option="USER_ENTERED")
+    if rows_maybe: _with_retry(ws_maybe.append_rows, rows_maybe, value_input_option="USER_ENTERED")
+    if rows_skip:  _with_retry(ws_skip.append_rows,  rows_skip,  value_input_option="USER_ENTERED")
 
     print(f"  Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
     return len(rows_apply), len(rows_maybe), len(rows_skip)
