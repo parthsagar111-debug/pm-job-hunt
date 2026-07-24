@@ -450,8 +450,16 @@ def evaluate_job(job: dict) -> dict:
 # ─────────────────────────────────────────────
 # OUTPUT — handled by sheets_writer + ntfy_notify
 # ─────────────────────────────────────────────
-def load_seen_urls() -> set:
-    """Dedup handled at write time by sheets_writer — return empty set."""
+def _load_seen_urls_stub() -> set:
+    """
+    UNUSED / DEPRECATED — do not call this.
+
+    This used to return an empty set on the assumption dedup only needed to
+    happen at write time. That let every run re-send already-seen jobs to the
+    Claude API for evaluation, burning tokens on duplicates. main() now calls
+    sheets_writer.load_seen_urls(spreadsheet_id) directly, BEFORE evaluation.
+    Kept only for backwards compatibility; left unused everywhere.
+    """
     return set()
 
 def save_to_excel(jobs: list):
@@ -479,10 +487,19 @@ def main():
         print("  ERROR: GLOBAL_SPREADSHEET_ID env var not set. Exiting.")
         sys.exit(1)
 
-    from sheets_writer import save_global_jobs
+    from sheets_writer import save_global_jobs, load_seen_urls
     from ntfy_notify import run_summary
 
-    seen = load_seen_urls()
+    # Dedup MUST happen before evaluation — evaluating already-seen jobs burns
+    # Claude API tokens for nothing. Load the real seen-set from the Sheet now,
+    # not just at write time.
+    try:
+        seen = load_seen_urls(SPREADSHEET_ID)
+        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
+    except Exception as e:
+        print(f"  ERROR: could not load dedup state from Sheet ({e}).")
+        print("  Aborting run rather than risk re-evaluating everything at full API cost.")
+        sys.exit(1)
 
     print("\n  [1/3] Searching LinkedIn worldwide (last 24 hours)...")
     all_jobs           = []

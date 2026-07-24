@@ -114,6 +114,23 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
     print(f"  [sheets] Dedup: {len(seen)} existing URLs loaded")
     return seen
 
+def load_seen_urls(spreadsheet_id: str) -> set:
+    """
+    Public entry point: open the sheet and return the set of already-seen job URLs.
+
+    Callers MUST use this to filter jobs BEFORE sending them to the Claude API for
+    evaluation — not just at write time. Evaluating jobs that are already in the
+    sheet burns API tokens for nothing, since save_eval_jobs()/save_global_jobs()
+    will just drop them again on write.
+
+    Raises on failure (after retries) rather than returning an empty set, so a
+    transient Sheets outage doesn't silently look like "nothing has ever been seen"
+    and trigger a full-price re-evaluation of everything.
+    """
+    client = _get_client()
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
+    return _load_seen_urls(sh)
+
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)

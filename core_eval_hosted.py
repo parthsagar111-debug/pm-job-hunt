@@ -143,9 +143,14 @@ def save_jobs_to_excel(jobs: list, sheet_override: str = None):
 
 def load_seen_jobs() -> set:
     """
-    In the hosted version, dedup is handled by sheets_writer.save_eval_jobs()
-    reading already-written URLs from the Google Sheet.
-    Returns empty set here — dedup happens at write time, not at fetch time.
+    UNUSED / DEPRECATED — do not call this.
+
+    This used to return an empty set, on the assumption dedup only needed to
+    happen at write time. That was wrong: it let evaluate_batch() send already-seen
+    jobs to the Claude API every run, burning tokens on duplicates. pm_eval_hosted.py
+    now calls sheets_writer.load_seen_urls(spreadsheet_id) directly, BEFORE
+    evaluation, instead of this function. Kept only for backwards compatibility;
+    left unused everywhere.
     """
     return set()
 
@@ -726,4 +731,10 @@ def evaluate_job(job: dict) -> dict:
 
     except Exception as e:
         print(f"    ⚠️  Eval error: {e}")
-        return {"decision": "Skip", "reason": "Evaluation failed", "gap": "—"}
+        # IMPORTANT: this must NOT be "Skip". A "Skip" decision gets written to the
+        # Sheet and permanently marked as seen (dedup is URL-presence based), so a
+        # billing/auth/network failure would silently and permanently blackhole every
+        # job it touched — they'd never be evaluated again even after the API key
+        # works again. "Error" is filtered out before writing, so these jobs get
+        # retried on the next run instead.
+        return {"decision": "Error", "reason": f"Evaluation failed: {e}", "gap": "—"}
