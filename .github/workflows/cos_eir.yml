@@ -1,4 +1,4 @@
-name: Chief of Staff / EIR — India Jobs
+name: Chief of Staff / EIR — India Jobs (no eval)
 
 on:
   workflow_dispatch:   # triggered externally by cron-job.org via GitHub API
@@ -27,12 +27,8 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements_hosted.txt
 
-      - name: Install Playwright browser
-        run: playwright install chromium --with-deps
-
-      - name: Run Chief of Staff / EIR Eval
+      - name: Run Chief of Staff / EIR Feed
         env:
-          ANTHROPIC_API_KEY:           ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           COS_EIR_SPREADSHEET_ID:      ${{ secrets.COS_EIR_SPREADSHEET_ID }}
           NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}

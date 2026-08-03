@@ -56,6 +56,14 @@ HEADERS_GLOBAL = [
     "Relocation", "Visa Sponsorship", "URL",
 ]
 
+# Plain listing — no AI evaluation/decision columns. Used for searches where an
+# Apply/Maybe/Skip judgment against a candidate profile doesn't make sense.
+TAB_LISTINGS = "Listings"
+
+HEADERS_RAW = [
+    "Month", "Date Found", "Title", "Company", "Location", "Source", "URL",
+]
+
 _URL_PATTERN = re.compile(
     r'https?://(www\.)?(linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/)\S+'
 )
@@ -96,10 +104,10 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
 def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
 
-def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
-    """Scan every cell in all 3 tabs for job URLs — immune to column misalignment."""
+def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set:
+    """Scan every cell in the given tabs for job URLs — immune to column misalignment."""
     seen = set()
-    for tab in (TAB_APPLY, TAB_MAYBE, TAB_SKIP):
+    for tab in tabs:
         try:
             ws = sh.worksheet(tab)
             all_values = _with_retry(ws.get_all_values)
@@ -114,14 +122,15 @@ def _load_seen_urls(sh: gspread.Spreadsheet) -> set:
     print(f"  [sheets] Dedup: {len(seen)} existing URLs loaded")
     return seen
 
-def load_seen_urls(spreadsheet_id: str) -> set:
+def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set:
     """
     Public entry point: open the sheet and return the set of already-seen job URLs.
 
     Callers MUST use this to filter jobs BEFORE sending them to the Claude API for
     evaluation — not just at write time. Evaluating jobs that are already in the
     sheet burns API tokens for nothing, since save_eval_jobs()/save_global_jobs()
-    will just drop them again on write.
+    will just drop them again on write. (For raw/unevaluated listings, this also
+    avoids re-writing duplicate rows every run — pass tabs=(TAB_LISTINGS,).)
 
     Raises on failure (after retries) rather than returning an empty set, so a
     transient Sheets outage doesn't silently look like "nothing has ever been seen"
@@ -129,7 +138,45 @@ def load_seen_urls(spreadsheet_id: str) -> set:
     """
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
-    return _load_seen_urls(sh)
+    return _load_seen_urls(sh, tabs=tabs)
+
+def save_raw_jobs(spreadsheet_id: str, jobs: list) -> int:
+    """
+    Write jobs directly to a single "Listings" tab — no AI evaluation, no
+    Apply/Maybe/Skip routing. For searches where scoring against a candidate
+    profile doesn't make sense; the sheet is just a deduped feed of matching
+    listings for the user to review manually.
+
+    Returns the number of newly written rows.
+    """
+    client = _get_client()
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
+    seen   = _load_seen_urls(sh, tabs=(TAB_LISTINGS,))
+
+    ws = _ensure_tab(sh, TAB_LISTINGS, HEADERS_RAW)
+
+    now       = _now_ist()
+    month_str = now.strftime("%Y-%m")
+    date_str  = now.strftime("%Y-%m-%d %H:%M")
+
+    rows = []
+    for job in jobs:
+        url = _clean_url(job.get("url", ""))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        rows.append([
+            month_str, date_str,
+            job.get("title", ""), job.get("company", ""),
+            job.get("location", ""), job.get("source", ""),
+            url,
+        ])
+
+    if rows:
+        _with_retry(ws.append_rows, rows, value_input_option="USER_ENTERED")
+
+    print(f"  Sheets: +{len(rows)} new listing(s)")
+    return len(rows)
 
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()

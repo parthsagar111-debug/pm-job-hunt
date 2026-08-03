@@ -56,3 +56,17 @@ def run_summary(script_name: str, n_apply: int, n_maybe: int, n_skip: int):
     )
     priority = "high" if n_apply > 0 else "default"
     push(title, message, priority)
+
+
+def listing_summary(script_name: str, n_new: int):
+    """
+    Send a post-run summary notification for unevaluated/raw listing feeds
+    (no Apply/Maybe/Skip judgment — just a count of new matching listings).
+    """
+    title   = f"{script_name} — run complete"
+    message = (
+        f"{n_new} new listing(s) found\n"
+        f"Check your Google Sheet for details."
+    )
+    priority = "high" if n_new > 0 else "default"
+    push(title, message, priority)
