@@ -2,6 +2,11 @@ name: PM Hiring Posts — LinkedIn Feed (Apify, no eval)
 
 on:
   workflow_dispatch:   # triggered externally by cron-job.org via GitHub API
+    inputs:
+      posted_limit:
+        description: 'Apify postedLimit window (24h, week, month, etc.) — defaults to 24h for the daily cron; widen for manual backfill runs.'
+        required: false
+        default: '24h'
 
 jobs:
   run:
@@ -26,4 +31,5 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           PM_POSTS_SPREADSHEET_ID:     ${{ secrets.PM_POSTS_SPREADSHEET_ID }}
           NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
+          POSTED_LIMIT:                ${{ inputs.posted_limit }}
         run: python pm_posts_hosted.py

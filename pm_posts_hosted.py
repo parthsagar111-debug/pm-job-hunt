@@ -29,11 +29,15 @@ from ntfy_notify import listing_summary
 APIFY_API_TOKEN = os.environ.get("APIFY_API_TOKEN", "")
 SPREADSHEET_ID  = os.environ.get("PM_POSTS_SPREADSHEET_ID", "")
 
+# Overridable per-run so a manual/backfill run can widen the window (e.g. "week")
+# without touching code. Apify accepts: any, 1h, 24h, week, month, 3months, 6months, year.
+POSTED_LIMIT = os.environ.get("POSTED_LIMIT", "24h")
+
 
 def main():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*55}")
-    print(f"  PM HIRING POSTS FEED (HOSTED) — 24h catch-up")
+    print(f"  PM HIRING POSTS FEED (HOSTED) — {POSTED_LIMIT} catch-up")
     print(f"  [{now}]")
     print(f"  Source: LinkedIn feed posts, via Apify (no cookies)")
     print(f"  Queries: {SEARCH_QUERIES}")
@@ -56,7 +60,7 @@ def main():
         sys.exit(1)
 
     try:
-        posts = fetch_pm_posts(APIFY_API_TOKEN, posted_limit="24h")
+        posts = fetch_pm_posts(APIFY_API_TOKEN, posted_limit=POSTED_LIMIT)
     except Exception as e:
         print(f"  ERROR: Apify run failed ({e}).")
         sys.exit(1)
