@@ -81,9 +81,12 @@ def fetch_pm_posts(api_token: str, posted_limit: str = "24h", max_posts_per_quer
     print(f"  [apify] Running {APIFY_ACTOR_ID} — {len(SEARCH_QUERIES)} quer(ies), postedLimit={posted_limit}")
     run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, wait_duration=timedelta(seconds=300))
 
-    dataset_id = run.get("defaultDatasetId")
+    if run is None:
+        raise RuntimeError("Apify run did not finish within the wait_duration")
+
+    dataset_id = run.default_dataset_id
     if not dataset_id:
-        raise RuntimeError("Apify run finished but returned no defaultDatasetId")
+        raise RuntimeError("Apify run finished but returned no default_dataset_id")
 
     author_counts = {}
     jobs = []
