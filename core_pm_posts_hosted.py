@@ -15,6 +15,10 @@ Actor used: harvestapi/linkedin-post-search ("No Cookies" variant)
 No AI evaluation — like Chief of Staff/EIR, this is a raw deduped feed for
 manual review, not an Apply/Maybe/Skip judgment against a candidate profile.
 
+India-only: filtered via text heuristic (see is_india_post below) since the
+actor's output has no location field. Posts that don't mention a city/India
+explicitly are dropped even if they are India-based.
+
 Required environment variable:
   APIFY_API_TOKEN   — from https://console.apify.com/settings/integrations
 """
@@ -40,6 +44,21 @@ SEARCH_QUERIES = [
 # catches queries LinkedIn's search matched loosely (e.g. stemming/synonyms).
 _PM_PATTERN = re.compile(r'product\s+manager', re.I)
 
+# India-only filter — text heuristic, since the Apify actor's post output has
+# no location/country field (LinkedIn's own content-search API doesn't expose
+# one either). Matches "India" plus major Indian tech-hiring cities/metros in
+# the post's own text. Only catches posts that explicitly mention a location,
+# so fully-remote/unspecified India roles that don't name a city will be
+# missed — accepted tradeoff for a free, no-extra-API-call filter (see chat
+# for the alternative: a paid per-author profile-location lookup).
+_INDIA_PATTERN = re.compile(
+    r'\b(india|bangalore|bengaluru|mumbai|delhi|ncr|gurgaon|gurugram|noida|'
+    r'greater\s+noida|pune|hyderabad|chennai|kolkata|ahmedabad|jaipur|'
+    r'chandigarh|kochi|cochin|coimbatore|indore|nagpur|surat|vadodara|thane|'
+    r'navi\s+mumbai|faridabad|ghaziabad)\b',
+    re.I,
+)
+
 # Cap per-author, so one prolific recruiter/agency doesn't fill the whole run.
 MAX_PER_AUTHOR = 3
 
@@ -47,6 +66,13 @@ MAX_PER_AUTHOR = 3
 def is_relevant_post(content: str) -> bool:
     """True if the post text actually mentions 'product manager'."""
     return bool(content) and bool(_PM_PATTERN.search(content))
+
+
+def is_india_post(content: str, author_info: str = "") -> bool:
+    """True if the post text (or author headline) mentions India or a major
+    Indian city. Text-heuristic only — see module docstring note above."""
+    text = f"{content} {author_info}"
+    return bool(_INDIA_PATTERN.search(text))
 
 
 def _clean_snippet(text: str, max_len: int = 180) -> str:
@@ -99,13 +125,16 @@ def fetch_pm_posts(api_token: str, posted_limit: str = "24h", max_posts_per_quer
         if not is_relevant_post(content):
             continue
 
-        url = item.get("linkedinUrl", "")
-        if not url:
-            continue
-
         author = item.get("author") or {}
         author_name = author.get("name", "") or "Unknown"
         author_info = author.get("info", "") or ""
+
+        if not is_india_post(content, author_info):
+            continue
+
+        url = item.get("linkedinUrl", "")
+        if not url:
+            continue
 
         if author_counts.get(author_name, 0) >= MAX_PER_AUTHOR:
             continue
@@ -119,5 +148,5 @@ def fetch_pm_posts(api_token: str, posted_limit: str = "24h", max_posts_per_quer
             "url": url,
         })
 
-    print(f"  [apify] {len(jobs)} relevant post(s) after filtering/author-cap")
+    print(f"  [apify] {len(jobs)} relevant India post(s) after filtering/author-cap")
     return jobs
