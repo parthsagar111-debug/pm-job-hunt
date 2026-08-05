@@ -65,7 +65,10 @@ HEADERS_RAW = [
 ]
 
 _URL_PATTERN = re.compile(
-    r'https?://(www\.)?(linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/)\S+'
+    r'https?://(www\.)?('
+    r'linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/|'
+    r'linkedin\.com/posts/|linkedin\.com/feed/update/'
+    r')\S+'
 )
 
 def _get_client() -> gspread.Client:
