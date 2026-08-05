@@ -31,13 +31,18 @@ from apify_client import ApifyClient
 
 APIFY_ACTOR_ID = "harvestapi/linkedin-post-search"
 
-# The four phrases agreed on — each is a literal LinkedIn search query (LinkedIn
-# caps each query at 85 characters; all of these are well under that).
+# The four phrases agreed on, with "India" folded directly into the query text —
+# without it, LinkedIn's search returns its top 40 GLOBALLY-relevant results per
+# phrase, and we were discarding ~95% of that budget client-side after the fact
+# (India-explicit posts are a small slice of global PM-hiring posts). Putting
+# "India" in the query itself lets LinkedIn's own relevance ranking bias results
+# toward India before we ever spend the maxPosts budget on them. Each query is
+# still well under LinkedIn's 85-character cap.
 SEARCH_QUERIES = [
-    "hiring a product manager",
-    "looking for a product manager",
-    "product manager role",
-    "product manager opening",
+    "hiring a product manager India",
+    "looking for a product manager India",
+    "product manager role India",
+    "product manager opening India",
 ]
 
 # Light relevance filter — the search queries are already targeted, but this
