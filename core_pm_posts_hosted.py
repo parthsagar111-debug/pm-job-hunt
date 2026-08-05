@@ -21,6 +21,7 @@ Required environment variable:
 
 import os
 import re
+from datetime import timedelta
 
 from apify_client import ApifyClient
 
@@ -78,7 +79,7 @@ def fetch_pm_posts(api_token: str, posted_limit: str = "24h", max_posts_per_quer
     }
 
     print(f"  [apify] Running {APIFY_ACTOR_ID} — {len(SEARCH_QUERIES)} quer(ies), postedLimit={posted_limit}")
-    run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, timeout_secs=300)
+    run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, wait_duration=timedelta(seconds=300))
 
     dataset_id = run.get("defaultDatasetId")
     if not dataset_id:
