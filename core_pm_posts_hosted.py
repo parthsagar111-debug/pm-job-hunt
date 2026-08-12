@@ -59,8 +59,16 @@ SEARCH_QUERIES = [
     "hiring a product manager Gurugram",
 ]
 
-# Light relevance filter — the search queries are already targeted, but this
-# catches queries LinkedIn's search matched loosely (e.g. stemming/synonyms).
+# Relevance filter — only checks the leading HEADLINE_WINDOW characters of the
+# post, not the whole body. Genuine PM-hiring posts almost always name the role
+# in the opening line ("We're hiring a Product Manager at X..."), whereas an
+# incidental mention of "product manager" buried in a skills/responsibilities
+# list for an unrelated role shows up much further down. Confirmed false
+# positive in practice: a "Barclays is hiring for Full Stack Engineer – Pune"
+# post got caught purely because its responsibilities section said "Collaborate
+# with product managers, designers and engineering teams" — checking only the
+# headline window filters this class of noise out for free (no extra Apify cost).
+HEADLINE_WINDOW = 200
 _PM_PATTERN = re.compile(r'product\s+manager', re.I)
 
 # India-only filter — text heuristic, since the Apify actor's post output has
@@ -83,8 +91,12 @@ MAX_PER_AUTHOR = 3
 
 
 def is_relevant_post(content: str) -> bool:
-    """True if the post text actually mentions 'product manager'."""
-    return bool(content) and bool(_PM_PATTERN.search(content))
+    """True if 'product manager' appears near the start of the post (within
+    HEADLINE_WINDOW characters) — i.e. the post is actually ABOUT a PM role,
+    not just mentioning PMs as a stakeholder somewhere in the body."""
+    if not content:
+        return False
+    return bool(_PM_PATTERN.search(content[:HEADLINE_WINDOW]))
 
 
 def is_india_post(content: str, author_info: str = "") -> bool:
