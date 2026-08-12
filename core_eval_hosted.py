@@ -628,11 +628,15 @@ Candidate Profile:
 - Location: Mumbai, open to relocation within India
 
 Apply if: title and seniority match, domain overlaps even partially, no hard blockers.
-Maybe if: title fits but domain is unfamiliar, or seniority is slightly off but role is interesting.
+Maybe if: title fits but domain is unfamiliar, or seniority is off but role is interesting —
+this includes cases where the role's stated experience range is lower than the candidate's
+9+ years (e.g. a listing wants 2-5 years) or higher. A numeric experience-range mismatch by
+itself is NEVER a Skip — it belongs in Maybe.
 
 Hard Skip ONLY if:
 1. Explicitly requires B.Tech/CS degree (not just "preferred")
-2. Role is clearly junior — Associate PM, APM, or under 4 years experience stated
+2. Role title itself is explicitly junior — "Associate Product Manager" or "APM" in the title
+   (title-based signal only; a numeric years-of-experience range alone does not qualify, see Maybe above)
 3. Domain is purely supply chain, warehouse ops, or clinical healthcare with no consumer product angle
 4. Role title is completely unrelated — project coordinator, account manager, program manager
 5. Clearly requires deep expertise in a domain with zero overlap (e.g. semiconductors, defence)
