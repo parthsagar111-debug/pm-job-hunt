@@ -31,18 +31,32 @@ from apify_client import ApifyClient
 
 APIFY_ACTOR_ID = "harvestapi/linkedin-post-search"
 
-# The four phrases agreed on, with "India" folded directly into the query text —
-# without it, LinkedIn's search returns its top 40 GLOBALLY-relevant results per
-# phrase, and we were discarding ~95% of that budget client-side after the fact
-# (India-explicit posts are a small slice of global PM-hiring posts). Putting
-# "India" in the query itself lets LinkedIn's own relevance ranking bias results
-# toward India before we ever spend the maxPosts budget on them. Each query is
-# still well under LinkedIn's 85-character cap.
+# The original four "India"-worded phrases, plus one query per major hiring city.
+# Reasoning for the India-worded phrases: without "India" folded into the query
+# text, LinkedIn's search returns its top 40 GLOBALLY-relevant results per phrase,
+# and we were discarding ~95% of that budget client-side after the fact.
+#
+# The city queries exist because that same fix has a blind spot: a post that
+# only names a city ("Bengaluru", "Gurugram", etc.) and never says the word
+# "India" ranks lower against our India-worded queries and can fall outside the
+# top-40-per-query cutoff — confirmed missed in practice (Elfina Health / PM
+# role, Bengaluru, Aug 2026 — post never said "India"). One query per top hiring
+# city closes that gap directly. Each query is still well under LinkedIn's
+# 85-character cap.
+#
+# Cost note: 10 queries vs. the original 4 means ~2.5x the Apify post volume for
+# this feed (still capped by maxPosts=40 per query, so the increase is bounded).
 SEARCH_QUERIES = [
     "hiring a product manager India",
     "looking for a product manager India",
     "product manager role India",
     "product manager opening India",
+    "hiring a product manager Bengaluru",
+    "hiring a product manager Mumbai",
+    "hiring a product manager Ahmedabad",
+    "hiring a product manager Hyderabad",
+    "hiring a product manager Delhi",
+    "hiring a product manager Gurugram",
 ]
 
 # Light relevance filter — the search queries are already targeted, but this
