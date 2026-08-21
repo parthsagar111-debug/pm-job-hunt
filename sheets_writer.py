@@ -59,13 +59,18 @@ HEADERS_GLOBAL = [
 # Sheets caps cell contents at 50,000 chars — stay well under that.
 JD_MAX_CHARS = 45000
 
-def _jd_for_row(decision: str, jd_text: str) -> str:
-    """Only Apply/Maybe rows carry JD text — Skip is the largest tab and
-    _load_seen_urls scans every cell on every run, so storing JD text there
-    would download megabytes per run for text nothing reads."""
-    if decision not in ("Apply", "Maybe") or not jd_text:
-        return ""
-    return jd_text[:JD_MAX_CHARS]
+def _jd_for_row(jd_text: str) -> str:
+    """Write JD for every decision — Apply, Maybe, AND Skip alike — since the
+    fetch already happened for every job regardless of outcome (evaluate_job
+    calls fetch_jd_text before it even knows the decision). Previously Skip
+    was excluded specifically because _load_seen_urls used to scan every
+    cell on every tab on every run; that's fixed below (URL-column-only, not
+    a full-grid scan) so storing JD on Skip no longer costs anything there.
+    2026-08-2x, Parth's call: job-automation's Agent 1 no longer live-fetches
+    JD for the PM Eval sheet at all (see agent1_hosted.py's _eval_jd_fetcher)
+    — the scraper is now the ONLY place this ever gets fetched, so it has to
+    actually capture it for every row, not just Apply/Maybe."""
+    return jd_text[:JD_MAX_CHARS] if jd_text else ""
 
 # Plain listing — no AI evaluation/decision columns. Used for searches where an
 # Apply/Maybe/Skip judgment against a candidate profile doesn't make sense.
@@ -119,16 +124,25 @@ def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
 
 def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set:
-    """Scan every cell in the given tabs for job URLs — immune to column misalignment."""
+    """Reads only the URL column (found by header name) on each tab — not a
+    full-grid scan. Changed 2026-08-2x: Skip now carries JD text too (see
+    _jd_for_row), up to 45,000 chars per cell, and this runs on every single
+    scraper invocation — a full get_all_values() over that would download
+    and re-scan all of it for nothing this function reads. Still immune to
+    column misalignment the way the old full-cell scan was: the URL column
+    is located by its header text each call, never a hardcoded position."""
     seen = set()
     for tab in tabs:
         try:
             ws = sh.worksheet(tab)
-            all_values = _with_retry(ws.get_all_values)
-            for row in all_values[1:]:  # skip header row
-                for cell in row:
-                    if cell and _URL_PATTERN.match(cell.strip()):
-                        seen.add(_clean_url(cell.strip()))
+            headers = _with_retry(ws.row_values, 1)
+            if "URL" not in headers:
+                print(f"  [sheets] Warning: {tab} has no URL header — skipping dedup read for it.")
+                continue
+            url_col = headers.index("URL") + 1
+            for cell in _with_retry(ws.col_values, url_col)[1:]:  # skip header row
+                if cell and _URL_PATTERN.match(cell.strip()):
+                    seen.add(_clean_url(cell.strip()))
         except gspread.WorksheetNotFound:
             pass
         except Exception as e:
@@ -219,7 +233,7 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
             job.get("title", ""), job.get("company", ""),
             job.get("location", ""), job.get("source", ""),
             dec, ev.get("reason", ""), ev.get("gap", ""), url,
-            _jd_for_row(dec, ev.get("jd", "")),
+            _jd_for_row(ev.get("jd", "")),
         ]
         if dec == "Apply":   rows_apply.append(row)
         elif dec == "Maybe": rows_maybe.append(row)
