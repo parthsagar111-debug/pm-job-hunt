@@ -69,7 +69,14 @@ def fetch_jd_playwright(url: str, retries: int = 2) -> str:
     """
     Fetch a LinkedIn job description page via the shared Playwright browser.
     Returns extracted description text (up to 4000 chars), or "" on failure.
+
+    Every failure path — exception, HTTP error, redirect to LinkedIn's login/
+    authwall, or a page that loaded fine but matched no JD selector — sets
+    `last_reason` and gets printed once all retries are exhausted, so a 100%
+    failure rate doesn't look identical to normal operation in the logs.
+    Ported from job-automation 2026-08-2x alongside the JD-capture patch.
     """
+    last_reason = "unknown"
     for attempt in range(retries + 1):
         page = None
         try:
@@ -79,7 +86,8 @@ def fetch_jd_playwright(url: str, retries: int = 2) -> str:
             # Random human-ish delay before each page load
             time.sleep(random.uniform(1.5, 3.5))
 
-            page.goto(url, timeout=20000, wait_until="domcontentloaded")
+            resp = page.goto(url, timeout=20000, wait_until="domcontentloaded")
+            status = resp.status if resp else None
 
             # Wait for the job description container to appear
             try:
@@ -105,12 +113,19 @@ def fetch_jd_playwright(url: str, retries: int = 2) -> str:
                     if len(txt) > 100:
                         return txt[:4000]
 
+            # Nothing matched — figure out (and remember) why, for the final print.
+            landed_url = page.url
+            title = (soup.title.string.strip() if soup.title and soup.title.string else "")
+            lowered = landed_url.lower()
+            if "login" in lowered or "authwall" in lowered or "checkpoint" in lowered:
+                last_reason = f"redirected to LinkedIn login/authwall (HTTP {status}, url {landed_url})"
+            elif status and status >= 400:
+                last_reason = f"HTTP {status} on {landed_url}"
+            else:
+                last_reason = f"page loaded (HTTP {status}) but no JD selector matched — title: {title!r}, url: {landed_url}"
+
         except Exception as e:
-            if attempt < retries:
-                wait = 8 * (attempt + 1) + random.uniform(0, 4)
-                print(f"  ⚠️  JD fetch retry {attempt + 1} in {wait:.0f}s... ", end="", flush=True)
-                time.sleep(wait)
-            # else fall through and return ""
+            last_reason = f"{type(e).__name__}: {e}"
         finally:
             if page:
                 try:
@@ -118,6 +133,12 @@ def fetch_jd_playwright(url: str, retries: int = 2) -> str:
                 except Exception:
                     pass
 
+        if attempt < retries:
+            wait = 8 * (attempt + 1) + random.uniform(0, 4)
+            print(f"  ⚠️  JD fetch retry {attempt + 1} in {wait:.0f}s (reason: {last_reason})... ", end="", flush=True)
+            time.sleep(wait)
+
+    print(f"  ⚠️  JD fetch (LinkedIn): failed after {retries + 1} attempt(s) — {last_reason}")
     return ""
 
 

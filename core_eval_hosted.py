@@ -537,10 +537,18 @@ SOURCE_ICONS = {
 }
 
 def fetch_jd_text(job: dict) -> str:
-    """Fetch and extract the full job description text from the job URL."""
+    """Fetch and extract the full job description text from the job URL.
+
+    Never raises — every failure path prints WHY before returning "", so a
+    run's logs show real fetch outcomes instead of a silent 0-vs-100% JD
+    rate that looks identical either way. Ported from job-automation
+    2026-08-2x alongside the JD-capture patch — this repo (pm-job-hunt) is
+    the one actually running in production, so this is where the real
+    fetch failures need to be visible."""
     url    = job.get("url", "")
     source = job.get("source", "")
     if not url:
+        print(f"  ⚠️  JD fetch ({source or 'unknown source'}): no URL on this row — cannot fetch.")
         return ""
     try:
         import urllib3
@@ -557,6 +565,11 @@ def fetch_jd_text(job: dict) -> str:
             driver = None
             try:
                 driver = make_driver()
+            except Exception as e:
+                print(f"  ⚠️  JD fetch ({source}): could not start Chrome/Selenium — {type(e).__name__}: {e}")
+                return ""
+
+            try:
                 driver.get(url)
                 time.sleep(4)
                 soup = BeautifulSoup(driver.page_source, "html.parser")
@@ -596,15 +609,22 @@ def fetch_jd_text(job: dict) -> str:
                 if candidates:
                     return max(candidates, key=len)[:4000]
 
+                page_title = (soup.title.string.strip() if soup.title and soup.title.string else "")
+                print(f"  ⚠️  JD fetch ({source}): page loaded but no JD text matched — "
+                      f"page title: {page_title!r}, landed at: {driver.current_url!r}")
+
             except Exception as e:
-                pass
+                print(f"  ⚠️  JD fetch ({source}): {type(e).__name__}: {e}")
             finally:
                 if driver:
                     try: driver.quit()
                     except: pass
 
+        else:
+            print(f"  ⚠️  JD fetch: unrecognized source {source!r} — no fetch method wired up for it.")
+
     except Exception as e:
-        pass  # fall back to title-only evaluation silently
+        print(f"  ⚠️  JD fetch ({source}): unexpected error before dispatch — {type(e).__name__}: {e}")
 
     return ""
 
@@ -719,7 +739,7 @@ def evaluate_job(job: dict) -> dict:
             if block.get("type") == "text"
         ).strip()
 
-        result = {"decision": "Skip", "reason": "", "gap": ""}
+        result = {"decision": "Skip", "reason": "", "gap": "", "jd": jd_text}
         for line in text.splitlines():
             line = line.strip()
             if line.lower().startswith("decision:"):
@@ -741,4 +761,4 @@ def evaluate_job(job: dict) -> dict:
         # job it touched — they'd never be evaluated again even after the API key
         # works again. "Error" is filtered out before writing, so these jobs get
         # retried on the next run instead.
-        return {"decision": "Error", "reason": f"Evaluation failed: {e}", "gap": "—"}
+        return {"decision": "Error", "reason": f"Evaluation failed: {e}", "gap": "—", "jd": jd_text}

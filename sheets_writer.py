@@ -47,7 +47,7 @@ TAB_SKIP  = "Skip"
 
 HEADERS_EVAL = [
     "Month", "Date Found", "Title", "Company", "Location",
-    "Source", "Decision", "Reason", "Gap", "URL",
+    "Source", "Decision", "Reason", "Gap", "URL", "JD",
 ]
 
 HEADERS_GLOBAL = [
@@ -55,6 +55,17 @@ HEADERS_GLOBAL = [
     "Source", "Decision", "Reason", "Gap",
     "Relocation", "Visa Sponsorship", "URL",
 ]
+
+# Sheets caps cell contents at 50,000 chars — stay well under that.
+JD_MAX_CHARS = 45000
+
+def _jd_for_row(decision: str, jd_text: str) -> str:
+    """Only Apply/Maybe rows carry JD text — Skip is the largest tab and
+    _load_seen_urls scans every cell on every run, so storing JD text there
+    would download megabytes per run for text nothing reads."""
+    if decision not in ("Apply", "Maybe") or not jd_text:
+        return ""
+    return jd_text[:JD_MAX_CHARS]
 
 # Plain listing — no AI evaluation/decision columns. Used for searches where an
 # Apply/Maybe/Skip judgment against a candidate profile doesn't make sense.
@@ -208,6 +219,7 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
             job.get("title", ""), job.get("company", ""),
             job.get("location", ""), job.get("source", ""),
             dec, ev.get("reason", ""), ev.get("gap", ""), url,
+            _jd_for_row(dec, ev.get("jd", "")),
         ]
         if dec == "Apply":   rows_apply.append(row)
         elif dec == "Maybe": rows_maybe.append(row)
