@@ -1,5 +1,5 @@
 """
-sheets_writer.py — shared Google Sheets output for pm_eval and linkedin_global
+sheets_writer.py — Google Sheets output for pm_eval
 """
 
 import os
@@ -50,12 +50,6 @@ HEADERS_EVAL = [
     "Source", "Decision", "Reason", "Gap", "URL", "JD",
 ]
 
-HEADERS_GLOBAL = [
-    "Month", "Date Found", "Title", "Company", "Location",
-    "Source", "Decision", "Reason", "Gap",
-    "Relocation", "Visa Sponsorship", "URL",
-]
-
 # Sheets caps cell contents at 50,000 chars — stay well under that.
 JD_MAX_CHARS = 45000
 
@@ -72,18 +66,9 @@ def _jd_for_row(jd_text: str) -> str:
     actually capture it for every row, not just Apply/Maybe."""
     return jd_text[:JD_MAX_CHARS] if jd_text else ""
 
-# Plain listing — no AI evaluation/decision columns. Used for searches where an
-# Apply/Maybe/Skip judgment against a candidate profile doesn't make sense.
-TAB_LISTINGS = "Listings"
-
-HEADERS_RAW = [
-    "Month", "Date Found", "Title", "Company", "Location", "Source", "URL",
-]
-
 _URL_PATTERN = re.compile(
     r'https?://(www\.)?('
-    r'linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/|'
-    r'linkedin\.com/posts/|linkedin\.com/feed/update/'
+    r'linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/'
     r')\S+'
 )
 
@@ -125,12 +110,12 @@ def _clean_url(url: str) -> str:
 
 def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set:
     """Reads only the URL column (found by header name) on each tab — not a
-    full-grid scan. Changed 2026-08-2x: Skip now carries JD text too (see
-    _jd_for_row), up to 45,000 chars per cell, and this runs on every single
-    scraper invocation — a full get_all_values() over that would download
-    and re-scan all of it for nothing this function reads. Still immune to
-    column misalignment the way the old full-cell scan was: the URL column
-    is located by its header text each call, never a hardcoded position."""
+    full-grid scan. Skip carries JD text too (see _jd_for_row), up to 45,000
+    chars per cell, and this runs on every single scraper invocation — a full
+    get_all_values() over that would download and re-scan all of it for
+    nothing this function reads. Still immune to column misalignment the way
+    a full-cell scan was: the URL column is located by its header text each
+    call, never a hardcoded position."""
     seen = set()
     for tab in tabs:
         try:
@@ -156,9 +141,8 @@ def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB
 
     Callers MUST use this to filter jobs BEFORE sending them to the Claude API for
     evaluation — not just at write time. Evaluating jobs that are already in the
-    sheet burns API tokens for nothing, since save_eval_jobs()/save_global_jobs()
-    will just drop them again on write. (For raw/unevaluated listings, this also
-    avoids re-writing duplicate rows every run — pass tabs=(TAB_LISTINGS,).)
+    sheet burns API tokens for nothing, since save_eval_jobs() will just drop them
+    again on write.
 
     Raises on failure (after retries) rather than returning an empty set, so a
     transient Sheets outage doesn't silently look like "nothing has ever been seen"
@@ -167,44 +151,6 @@ def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
     return _load_seen_urls(sh, tabs=tabs)
-
-def save_raw_jobs(spreadsheet_id: str, jobs: list) -> int:
-    """
-    Write jobs directly to a single "Listings" tab — no AI evaluation, no
-    Apply/Maybe/Skip routing. For searches where scoring against a candidate
-    profile doesn't make sense; the sheet is just a deduped feed of matching
-    listings for the user to review manually.
-
-    Returns the number of newly written rows.
-    """
-    client = _get_client()
-    sh     = _with_retry(client.open_by_key, spreadsheet_id)
-    seen   = _load_seen_urls(sh, tabs=(TAB_LISTINGS,))
-
-    ws = _ensure_tab(sh, TAB_LISTINGS, HEADERS_RAW)
-
-    now       = _now_ist()
-    month_str = now.strftime("%Y-%m")
-    date_str  = now.strftime("%Y-%m-%d %H:%M")
-
-    rows = []
-    for job in jobs:
-        url = _clean_url(job.get("url", ""))
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        rows.append([
-            month_str, date_str,
-            job.get("title", ""), job.get("company", ""),
-            job.get("location", ""), job.get("source", ""),
-            url,
-        ])
-
-    if rows:
-        _with_retry(ws.append_rows, rows, value_input_option="USER_ENTERED")
-
-    print(f"  Sheets: +{len(rows)} new listing(s)")
-    return len(rows)
 
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()
@@ -234,49 +180,6 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
             job.get("location", ""), job.get("source", ""),
             dec, ev.get("reason", ""), ev.get("gap", ""), url,
             _jd_for_row(ev.get("jd", "")),
-        ]
-        if dec == "Apply":   rows_apply.append(row)
-        elif dec == "Maybe": rows_maybe.append(row)
-        else:                rows_skip.append(row)
-
-    if rows_apply: _with_retry(ws_apply.append_rows, rows_apply, value_input_option="USER_ENTERED")
-    if rows_maybe: _with_retry(ws_maybe.append_rows, rows_maybe, value_input_option="USER_ENTERED")
-    if rows_skip:  _with_retry(ws_skip.append_rows,  rows_skip,  value_input_option="USER_ENTERED")
-
-    print(f"  Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
-    return len(rows_apply), len(rows_maybe), len(rows_skip)
-
-
-def save_global_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
-    client = _get_client()
-    sh     = _with_retry(client.open_by_key, spreadsheet_id)
-    seen   = _load_seen_urls(sh)
-
-    ws_apply = _ensure_tab(sh, TAB_APPLY, HEADERS_GLOBAL)
-    ws_maybe = _ensure_tab(sh, TAB_MAYBE, HEADERS_GLOBAL)
-    ws_skip  = _ensure_tab(sh, TAB_SKIP,  HEADERS_GLOBAL)
-
-    now       = _now_ist()
-    month_str = now.strftime("%Y-%m")
-    date_str  = now.strftime("%Y-%m-%d %H:%M")
-
-    rows_apply, rows_maybe, rows_skip = [], [], []
-
-    for job in jobs:
-        url = _clean_url(job.get("url", ""))
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        ev  = job.get("evaluation", {})
-        dec = ev.get("decision", "Skip")
-        row = [
-            month_str, date_str,
-            job.get("title", ""), job.get("company", ""),
-            job.get("location", ""), job.get("source", ""),
-            dec, ev.get("reason", ""), ev.get("gap", ""),
-            "Yes" if job.get("relocation_confirmed") else "No",
-            "Yes" if job.get("visa_confirmed") else "No",
-            url,
         ]
         if dec == "Apply":   rows_apply.append(row)
         elif dec == "Maybe": rows_maybe.append(row)
