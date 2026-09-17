@@ -30,7 +30,6 @@ from core_eval_hosted import (
 )
 from sheets_writer import save_eval_jobs, load_seen_keys
 from ntfy_notify import run_summary
-from playwright_browser import close_browser
 from datetime import datetime
 
 SPREADSHEET_ID = os.environ.get("PM_EVAL_SPREADSHEET_ID", "")
@@ -107,10 +106,6 @@ def main():
     if not evaluated_jobs:
         print("\n  No jobs were successfully evaluated this run (API failures only).")
         run_summary("PM Eval — FAILED", 0, 0, 0)
-        try:
-            close_browser()
-        except Exception:
-            pass
         sys.exit(1)
 
     # Save to Google Sheets — dedup happens inside save_eval_jobs too (belt & suspenders)
@@ -126,10 +121,6 @@ def main():
         print("  NOTE: run was aborted early due to repeated API errors — some jobs untouched, will retry next run.")
     print(f"{'='*55}\n")
 
-    try:
-        close_browser()
-    except Exception:
-        pass
 
     if aborted:
         sys.exit(1)  # surface as a failed run in GitHub Actions even though partial results were saved

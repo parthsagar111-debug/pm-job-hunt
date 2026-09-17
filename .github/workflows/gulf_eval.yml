@@ -29,8 +29,6 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements_hosted.txt
 
-      - name: Install Playwright browser
-        run: playwright install chromium --with-deps
 
       - name: Run Gulf PM Eval
         env:

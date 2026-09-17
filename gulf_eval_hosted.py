@@ -32,7 +32,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core_eval_hosted import fetch_linkedin, evaluate_batch, job_fingerprint, LI_LIMITER
 from sheets_writer import save_eval_jobs, load_seen_keys
 from ntfy_notify import run_summary
-from playwright_browser import close_browser
 from datetime import datetime
 
 SPREADSHEET_ID = os.environ.get("GULF_SPREADSHEET_ID", "")
@@ -283,13 +282,7 @@ def main():
         run_summary("Gulf PM Eval", 0, 0, 0)
         return
 
-    try:
-        evaluated_jobs, aborted = evaluate_batch(all_jobs, GULF_EVAL_PROMPT)
-    finally:
-        try:
-            close_browser()
-        except Exception:
-            pass
+    evaluated_jobs, aborted = evaluate_batch(all_jobs, GULF_EVAL_PROMPT)
 
     if not evaluated_jobs:
         print("\n  No jobs were successfully evaluated this run (API failures only).")

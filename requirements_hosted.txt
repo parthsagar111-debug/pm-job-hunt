@@ -3,6 +3,5 @@ beautifulsoup4
 selenium
 webdriver-manager
 curl_cffi
-playwright
 gspread
 google-auth

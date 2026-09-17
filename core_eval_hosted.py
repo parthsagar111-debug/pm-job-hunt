@@ -9,7 +9,7 @@ Differences from local core_eval.py:
 - No openpyxl / Excel output
 - No plyer desktop notifications
 - Expanded LinkedIn keyword list (Associate PM → VP of Product)
-- Playwright for LinkedIn JD fetch (rate-limit resilient)
+- LinkedIn JD via the logged-out guest endpoint (no browser)
 - Selenium stays for Naukri/Hirist/IIMJobs (works headless on Ubuntu CI)
 """
 
@@ -712,20 +712,14 @@ def fetch_jd_text(job: dict) -> str:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         if source.startswith("LinkedIn"):   # "LinkedIn" (India) and "LinkedIn Gulf"
-            # Guest endpoint first: no browser at all, ~1.4s/job, and it fetched
-            # 2570 of 2575 JDs in the 2026-09-17 global probe. Playwright stays as
-            # a fallback only — it costs a chromium install per workflow run and a
-            # persistent browser process for what is now a plain HTTP GET.
+            # Guest endpoint: no browser at all, and it fetched 2570 of 2575 JDs in
+            # the global probe plus every JD in the first two live runs. Playwright
+            # is gone — it cost a 300MB chromium install per workflow run and a
+            # browser process for what is a plain HTTP GET.
             jd = fetch_jd_guest(job.get("job_id", "") or url)
-            if jd:
-                return jd
-            print(f"  ⚠️  JD fetch ({source}): guest endpoint empty — falling back to Playwright.")
-            try:
-                from playwright_browser import fetch_jd_playwright
-                return fetch_jd_playwright(url)
-            except Exception as e:
-                print(f"  ⚠️  JD fetch ({source}): Playwright fallback failed — {type(e).__name__}: {e}")
-                return ""
+            if not jd:
+                print(f"  ⚠️  JD fetch ({source}): guest endpoint returned nothing for {url}")
+            return jd
 
         elif source in ("Naukri", "Hirist/IIMJobs", "IIMJobs"):
             # Both block plain requests — use Selenium
