@@ -19,11 +19,11 @@ support — instead it skips roles restricted to local nationals
 **Global Visa PM** gives no Apply/Maybe/Skip judgment. It searches 10 countries —
 US (split by state, since it always hits LinkedIn's ~1000-result cap), UK, Germany,
 Canada, Spain, Netherlands, Singapore, Australia, Ireland, Cyprus — reads each JD from
-LinkedIn's guest endpoint, and keeps a job only when Claude Haiku confirms the
+LinkedIn's guest endpoint (no browser), and keeps a job only when Claude Haiku confirms the
 employer offers visa sponsorship — `YES`, or `CONDITIONAL` for "may be available".
 Relocation support alone doesn't qualify. Only the visa-related lines of the JD
 are sent to Claude, which keeps a full run at roughly $0.08. A 24h sweep takes
-~70 min and yields ~8–12 sponsoring roles a day.
+~45-60 min and yields ~8–12 sponsoring roles a day.
 
 ---
 
@@ -79,7 +79,7 @@ Body: {"ref": "master"}
 ```
 (To schedule a week run instead, the body would be `{"ref": "master", "inputs": {"time_range": "week"}}`.)
 Gulf: every few hours is plenty — far fewer PM roles than India.
-Global Visa: once a day. A run takes ~70 minutes and only ~10 roles a day state visa support.
+Global Visa: once a day (currently 03:00 IST). A run takes ~45-60 minutes and only ~10 roles a day state visa support.
 
 ---
 
@@ -96,6 +96,17 @@ High priority if there are any Apply results.
 Each row: Month, Date Found, Title, Company, Location, Source, Decision, Reason, Gap, URL, JD.
 
 ---
+
+## Development
+```bash
+pip install -r requirements_hosted.txt -r requirements_dev.txt
+python -m pytest tests -q
+```
+105 offline tests (no network, no API key) cover the title/location filters, the
+fingerprint dedup, the Claude schema guard, the mandatory-Arabic override, the
+visa excerpt, LinkedIn parsing/pagination and the Sheets helpers. CI runs them on
+every push to master. See TECHNICAL_BRIEF.md for the architecture and the
+measured LinkedIn rate limits.
 
 ## GitHub Actions minutes
 The repo is public, so standard GitHub-hosted runners are free with no monthly
