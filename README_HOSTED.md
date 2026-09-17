@@ -7,7 +7,7 @@
 | **Gulf PM Eval** | `gulf_eval_hosted.py` | PM jobs in UAE, Saudi Arabia, Qatar, Bahrain, Oman, Kuwait — LinkedIn, last 24h or last week | `GULF_SPREADSHEET_ID` |
 | **Global Visa PM** | `global_visa_hosted.py` | PM jobs worldwide (except India + Gulf) whose JD offers visa sponsorship — LinkedIn, last 24h | `GLOBAL_VISA_SPREADSHEET_ID` |
 
-Both are triggered externally by cron-job.org calling GitHub's `workflow_dispatch`
+All three are triggered externally by cron-job.org calling GitHub's `workflow_dispatch`
 API (not GitHub's own built-in cron). PM Eval currently runs every 30 minutes.
 Results → Google Sheets. Summary → ntfy push notification on your phone.
 
@@ -42,7 +42,7 @@ are sent to Claude, which keeps a full run at roughly $0.08. A 24h sweep takes
 5. Copy the `client_email` from the JSON (looks like `pm-job-bot@project.iam.gserviceaccount.com`)
 
 ### Step 3 — Google Sheets
-1. Create one Google Sheet per feed, e.g. "PM Job Eval" and "Gulf PM Eval"
+1. Create one Google Sheet per feed, e.g. "PM Job Eval", "Gulf PM Eval" and "Global Visa PM"
 2. Share each with the service account email → Editor access
 3. Copy each Sheet's ID from its URL: `https://docs.google.com/spreadsheets/d/THIS_IS_THE_ID/edit`
 
@@ -70,14 +70,16 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
     evaluates every new listing from the past week
 - Scheduled calls from cron-job.org don't pass inputs, so they get `24h`.
 
-### Scheduling Gulf PM Eval on cron-job.org
-Same as the PM Eval job, but POST to the `gulf_eval.yml` workflow:
+### Scheduling the other feeds on cron-job.org
+Same headers as the PM Eval job (including the GitHub token), only the workflow file changes:
 ```
 POST https://api.github.com/repos/parthsagar111-debug/pm-job-hunt/actions/workflows/gulf_eval.yml/dispatches
+POST https://api.github.com/repos/parthsagar111-debug/pm-job-hunt/actions/workflows/global_visa.yml/dispatches
 Body: {"ref": "master"}
 ```
 (To schedule a week run instead, the body would be `{"ref": "master", "inputs": {"time_range": "week"}}`.)
-Every few hours is plenty — the Gulf market posts far fewer PM roles than India.
+Gulf: every few hours is plenty — far fewer PM roles than India.
+Global Visa: once a day. A run takes ~70 minutes and only ~10 roles a day state visa support.
 
 ---
 
