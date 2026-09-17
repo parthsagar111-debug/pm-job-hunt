@@ -117,6 +117,7 @@ def main() -> None:
 
     print(f"\n{'='*55}")
     print(f"  Done. Apply: {n_apply}  Maybe: {n_maybe}  Skip: {n_skip}")
+    print(f"  Rate: {LI_LIMITER.summary()}")
     if aborted:
         print("  NOTE: run was aborted early due to repeated API errors — some jobs untouched, will retry next run.")
     print(f"{'='*55}\n")

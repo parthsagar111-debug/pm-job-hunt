@@ -319,7 +319,8 @@ def main() -> None:
             print(f"  … {i}/{len(jobs)} JDs done, {len(keepers)} sponsoring so far", flush=True)
 
     cost = USAGE["input_tokens"] / 1e6 * 1.0 + USAGE["output_tokens"] / 1e6 * 5.0  # Haiku 4.5 $1/$5 per MTok
-    print(f"\n  JDs: {jd_ok} fetched, {jd_fail} failed  |  "
+    print(f"\n  Rate: {LI_LIMITER.summary()}")
+    print(f"  JDs: {jd_ok} fetched, {jd_fail} failed  |  "
           f"visa lines found: {sum(counts[k] for k in ('YES','CONDITIONAL','NO','ERROR'))}  |  "
           f"YES {counts['YES']}  CONDITIONAL {counts['CONDITIONAL']}  NO {counts['NO']}  "
           f"ERROR {counts['ERROR']}  |  Haiku ${cost:.2f}")
