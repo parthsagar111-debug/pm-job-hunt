@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*_debug.html
+service_account.json
+config.py
