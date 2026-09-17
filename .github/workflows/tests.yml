@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements_hosted.txt
+          pip install -r requirements_dev.txt
+
+      # No network and no API key: every test here is offline by design, so a
+      # failure means the logic broke, not that LinkedIn or Anthropic had a bad day.
+      - name: Run tests
+        run: python -m pytest tests -q
