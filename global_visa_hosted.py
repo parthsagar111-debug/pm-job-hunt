@@ -44,7 +44,7 @@ import requests
 
 from core_eval_hosted import (
     _li_get_with_retry, _parse_li_cards, _LI_TPR, _load_api_key, claude_structured,
-    fetch_jd_guest, job_fingerprint, LI_LIMITER,
+    fetch_jd_guest, JobCollector, LI_LIMITER,
 )
 from gulf_eval_hosted import is_gulf_location
 from sheets_writer import save_visa_jobs, load_seen_keys, TAB_LISTINGS
@@ -141,36 +141,20 @@ def collect_jobs(seen: set, seen_keys: set) -> list:
     """One search per country (US by state if it hits the cap), keeping new product
     roles outside India/the Gulf. A role posted in several cities is kept once, with
     the other locations appended — Anthropic's PM Growth showed up in 3 US cities."""
-    jobs, by_key, seen_ids = {}, {}, set()
+    collector = JobCollector(
+        seen_urls=seen, seen_keys=seen_keys,
+        location_ok=lambda loc: not (_INDIA.search(loc) or is_gulf_location(loc)),
+        title_ok=is_product_role,
+        source="LinkedIn Global",
+    )
 
     def run(label, location):
         hits, scanned, pages = search(location, time_range=TIME_RANGE)
-        kept = 0
+        before = collector.counts["kept"]
         for j in hits:
-            if j["job_id"] in seen_ids:
-                continue
-            seen_ids.add(j["job_id"])
-            if _INDIA.search(j["location"]) or is_gulf_location(j["location"]):
-                continue
-            if not is_product_role(j["title"]):
-                continue
-            key = job_fingerprint(j.get("company", ""), j.get("title", ""), j.get("location", ""))
-            if key in seen_keys:      # re-post of a role already in the Sheet
-                continue
-            if key in by_key:
-                kept_job = by_key[key]
-                if kept_job is not None and j["location"] not in kept_job["location"]:
-                    kept_job["location"] += " / " + j["location"]
-                continue
-            if j["url"].split("?")[0] in seen:
-                by_key[key] = None   # already in the Sheet — don't re-add from another country
-                continue
-            j["source"]   = "LinkedIn Global"
-            j["searched"] = label
-            by_key[key]   = j
-            jobs[j["job_id"]] = j
-            kept += 1
-        print(f"  {label:<34} scanned {scanned:>4} / {pages:>3} pages → +{kept}"
+            collector.add(j, label=label)
+        print(f"  {label:<34} scanned {scanned:>4} / {pages:>3} pages "
+              f"→ +{collector.counts['kept'] - before}"
               + ("   ⚠️ near LinkedIn's 1000 cap" if scanned >= CAP_NEAR else ""), flush=True)
         return scanned
 
@@ -183,7 +167,8 @@ def collect_jobs(seen: set, seen_keys: set) -> list:
             print("  United States hit the cap — splitting by state", flush=True)
             for st in US_STATES:
                 run(f"US / {st}", f"{st}, United States")
-    return list(jobs.values())
+    print(f"\n  Collected: {collector.summary()}")
+    return collector.jobs
 
 # JD fetch lives in core as fetch_jd_guest() — all three feeds share it now.
 

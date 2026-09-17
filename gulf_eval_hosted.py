@@ -29,7 +29,9 @@ import random
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core_eval_hosted import fetch_linkedin, evaluate_batch, job_fingerprint, LI_LIMITER
+from core_eval_hosted import (
+    fetch_linkedin, evaluate_batch, JobCollector, LI_LIMITER,
+)
 from sheets_writer import save_eval_jobs, load_seen_keys
 from ntfy_notify import run_summary
 from datetime import datetime
@@ -192,57 +194,27 @@ reason (max 15 words), gap (biggest gap, or "None")."""
 # FETCH
 # ─────────────────────────────────────────────
 def fetch_gulf_jobs(time_range: str, seen: set, seen_keys: set = None) -> list:
-    all_jobs       = []
-    seen_ids       = set()
-    company_counts = {}
-    seen_keys      = seen_keys if seen_keys is not None else set()
-    # Regional roles get posted once per country under different LinkedIn ids
-    # (e.g. Stryker "Product Manager, Medical Devices - META" in both Dubai and
-    # Riyadh). Keep the first copy and note the other locations on it. Keys are
-    # registered even for already-in-Sheet copies, so a re-post in another
-    # country isn't treated as new.
-    by_title_company = {}   # key -> the kept job dict, or None if it's already in the Sheet
+    """Search each GCC country and return the new roles. Filtering, dedup and the
+    per-company cap live in core's JobCollector, shared with the global feed —
+    including collapsing a regional role posted in several countries under
+    different ids (Stryker's META PM appeared in both Dubai and Riyadh)."""
+    collector = JobCollector(
+        seen_urls=seen, seen_keys=seen_keys,
+        location_ok=is_gulf_location,
+        max_per_company=MAX_PER_COMPANY,
+        source="LinkedIn Gulf",
+    )
 
     for country, keywords in GULF_SEARCHES:
         print(f"\n🌴 [{country}]")
         for kw in keywords:
             print(f"    [{kw}]", end=" ", flush=True)
-            jobs = fetch_linkedin(kw, time_range, location=country, paginate=True, limit=1000)
-            new = off_region = dupes = 0
-            for job in jobs:
-                if job["job_id"] in seen_ids:
-                    continue
-                seen_ids.add(job["job_id"])
-                if not is_gulf_location(job["location"]):
-                    off_region += 1
-                    continue
-                key = job_fingerprint(job.get("company", ""), job.get("title", ""),
-                                      job.get("location", ""))
-                if key in seen_keys:      # re-post of a role already in the Sheet
-                    dupes += 1
-                    continue
-                if key in by_title_company:
-                    kept = by_title_company[key]
-                    if kept is not None and job["location"] not in kept["location"]:
-                        kept["location"] += " / " + job["location"]
-                    dupes += 1
-                    continue
-                if job["url"].split("?")[0] in seen:
-                    by_title_company[key] = None
-                    continue
-                co = job.get("company", "").lower().strip()
-                if company_counts.get(co, 0) >= MAX_PER_COMPANY:
-                    continue
-                company_counts[co] = company_counts.get(co, 0) + 1
-                job["source"] = "LinkedIn Gulf"
-                by_title_company[key] = job
-                all_jobs.append(job)
-                new += 1
-            extras = []
-            if off_region: extras.append(f"{off_region} outside the Gulf dropped")
-            if dupes:      extras.append(f"{dupes} same title+company as another country dropped")
-            print(f"    → {new} new" + (f"  ({'; '.join(extras)})" if extras else ""))
-    return all_jobs
+            before = collector.counts["kept"]
+            for job in fetch_linkedin(kw, time_range, location=country, paginate=True, limit=1000):
+                collector.add(job, label=country)
+            print(f"    → {collector.counts['kept'] - before} new")
+    print(f"\n  Collected: {collector.summary()}")
+    return collector.jobs
 
 # ─────────────────────────────────────────────
 # MAIN — single run, then exit

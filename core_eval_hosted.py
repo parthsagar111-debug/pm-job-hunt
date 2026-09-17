@@ -675,6 +675,87 @@ def job_fingerprint(company: str, title: str, location: str) -> str:
     return f"{_norm(company)}|{_norm(title)}|{location_country(location)}"
 
 
+class JobCollector:
+    """Shared filter-and-dedup bookkeeping for a run.
+
+    The Gulf and global feeds drive their own search loops (one paginates per
+    country and splits the US by state, the other pairs countries with keyword
+    lists), but the per-job decisions were duplicated in both: skip ids already
+    seen this run, apply a location filter, apply a title filter, drop anything
+    already in the Sheet by URL or fingerprint, collapse the same role posted in
+    several cities, and cap how many roles one company can contribute.
+
+    Counters are exposed so each feed can log why jobs disappeared — a silent
+    filter is how you end up wondering where all the listings went.
+    """
+
+    def __init__(self, seen_urls: set = None, seen_keys: set = None, *,
+                 location_ok=None, title_ok=None, max_per_company: int = 0,
+                 source: str = ""):
+        self.seen_urls       = seen_urls or set()
+        self.seen_keys       = set(seen_keys or ())
+        self.location_ok     = location_ok
+        self.title_ok        = title_ok
+        self.max_per_company = max_per_company
+        self.source          = source
+
+        self.jobs            = []
+        self._ids            = set()
+        self._by_key         = {}      # fingerprint -> kept job, or None if already in the Sheet
+        self._company_counts = {}
+        self.counts          = {"off_region": 0, "wrong_title": 0, "duplicate": 0,
+                                "already_seen": 0, "company_cap": 0, "kept": 0}
+
+    def add(self, job: dict, label: str = "") -> bool:
+        """Returns True if the job was kept."""
+        if job["job_id"] in self._ids:
+            return False
+        self._ids.add(job["job_id"])
+
+        if self.location_ok and not self.location_ok(job.get("location", "")):
+            self.counts["off_region"] += 1
+            return False
+        if self.title_ok and not self.title_ok(job.get("title", "")):
+            self.counts["wrong_title"] += 1
+            return False
+
+        key = job_fingerprint(job.get("company", ""), job.get("title", ""), job.get("location", ""))
+        if key in self.seen_keys:          # re-post of a role already judged
+            self.counts["duplicate"] += 1
+            return False
+        if key in self._by_key:            # same role, another city/country, this run
+            kept = self._by_key[key]
+            if kept is not None and job.get("location", "") not in kept["location"]:
+                kept["location"] += " / " + job["location"]
+            self.counts["duplicate"] += 1
+            return False
+
+        if job.get("url", "").split("?")[0] in self.seen_urls:
+            self._by_key[key] = None       # remember it, so another country's copy isn't "new"
+            self.counts["already_seen"] += 1
+            return False
+
+        company = job.get("company", "").lower().strip()
+        if self.max_per_company and self._company_counts.get(company, 0) >= self.max_per_company:
+            self.counts["company_cap"] += 1
+            return False
+        self._company_counts[company] = self._company_counts.get(company, 0) + 1
+
+        if self.source:
+            job["source"] = self.source
+        if label:
+            job["searched"] = label
+        self._by_key[key] = job
+        self.jobs.append(job)
+        self.counts["kept"] += 1
+        return True
+
+    def summary(self) -> str:
+        dropped = ", ".join(f"{n} {name.replace('_', ' ')}"
+                            for name, n in self.counts.items() if name != "kept" and n)
+        return f"{self.counts['kept']} kept" + (f" ({dropped})" if dropped else "")
+
+
 def fetch_jd_guest(job_id_or_url: str) -> str:
     """LinkedIn JD via the logged-out guest endpoint — no browser, no Playwright.
 
