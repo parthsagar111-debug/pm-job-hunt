@@ -152,6 +152,45 @@ def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
     return _load_seen_urls(sh, tabs=tabs)
 
+ROW_HEIGHT_PX = 21   # Sheets' default single-line row height
+
+def _compact_rows(sh: gspread.Spreadsheet, worksheets: list):
+    """Keep every data row one line tall. The JD cell is multi-line text, and
+    Sheets auto-grows a row to fit newlines — so clip wrapping and pin the row
+    height on all data rows. Applied to the whole tab each run (one request),
+    so it also fixes rows written before this existed. Cosmetic only: never
+    fails the save."""
+    try:
+        meta = _with_retry(sh.fetch_sheet_metadata)   # appends can grow the grid past ws.row_count
+        grid_rows = {s["properties"]["sheetId"]: s["properties"]["gridProperties"]["rowCount"]
+                     for s in meta["sheets"]}
+    except Exception as e:
+        print(f"  [sheets] Warning: couldn't compact row heights ({e}) — rows saved fine.")
+        return
+    requests = []
+    for ws in worksheets:
+        n_rows = grid_rows.get(ws.id, ws.row_count)
+        if n_rows <= 1:
+            continue
+        rows = {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": n_rows}
+        requests.append({"repeatCell": {
+            "range":  rows,
+            "cell":   {"userEnteredFormat": {"wrapStrategy": "CLIP", "verticalAlignment": "TOP"}},
+            "fields": "userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment",
+        }})
+        requests.append({"updateDimensionProperties": {
+            "range":      {"sheetId": ws.id, "dimension": "ROWS",
+                           "startIndex": 1, "endIndex": n_rows},
+            "properties": {"pixelSize": ROW_HEIGHT_PX},
+            "fields":     "pixelSize",
+        }})
+    if not requests:
+        return
+    try:
+        _with_retry(sh.batch_update, {"requests": requests})
+    except Exception as e:
+        print(f"  [sheets] Warning: couldn't compact row heights ({e}) — rows saved fine.")
+
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
@@ -188,6 +227,8 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     if rows_apply: _with_retry(ws_apply.append_rows, rows_apply, value_input_option="USER_ENTERED")
     if rows_maybe: _with_retry(ws_maybe.append_rows, rows_maybe, value_input_option="USER_ENTERED")
     if rows_skip:  _with_retry(ws_skip.append_rows,  rows_skip,  value_input_option="USER_ENTERED")
+
+    _compact_rows(sh, [ws_apply, ws_maybe, ws_skip])
 
     print(f"  Sheets: +{len(rows_apply)} Apply  +{len(rows_maybe)} Maybe  +{len(rows_skip)} Skip")
     return len(rows_apply), len(rows_maybe), len(rows_skip)
