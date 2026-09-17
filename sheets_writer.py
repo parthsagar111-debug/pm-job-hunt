@@ -45,6 +45,13 @@ TAB_APPLY = "Apply"
 TAB_MAYBE = "Maybe"
 TAB_SKIP  = "Skip"
 
+# Global visa feed: one plain listing tab, no Apply/Maybe/Skip fit judgment.
+TAB_LISTINGS  = "Listings"
+HEADERS_VISA  = [
+    "Month", "Date Found", "Visa", "Evidence", "Title", "Company",
+    "Location", "Posted", "Source", "URL", "JD",
+]
+
 HEADERS_EVAL = [
     "Month", "Date Found", "Title", "Company", "Location",
     "Source", "Decision", "Reason", "Gap", "URL", "JD",
@@ -190,6 +197,41 @@ def _compact_rows(sh: gspread.Spreadsheet, worksheets: list):
         _with_retry(sh.batch_update, {"requests": requests})
     except Exception as e:
         print(f"  [sheets] Warning: couldn't compact row heights ({e}) — rows saved fine.")
+
+def save_visa_jobs(spreadsheet_id: str, jobs: list) -> int:
+    """Global visa feed: append rows to the single Listings tab. Each job carries
+    visa_verdict ("YES"/"CONDITIONAL") and visa_evidence. Returns rows written."""
+    client = _get_client()
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
+    seen   = _load_seen_urls(sh, tabs=(TAB_LISTINGS,))
+
+    ws = _ensure_tab(sh, TAB_LISTINGS, HEADERS_VISA)
+
+    now       = _now_ist()
+    month_str = now.strftime("%Y-%m")
+    date_str  = now.strftime("%Y-%m-%d %H:%M")
+
+    rows = []
+    for job in jobs:
+        url = _clean_url(job.get("url", ""))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        rows.append([
+            month_str, date_str,
+            job.get("visa_verdict", ""), job.get("visa_evidence", ""),
+            job.get("title", ""), job.get("company", ""),
+            job.get("location", ""), job.get("posted", ""),
+            job.get("source", ""), url,
+            _jd_for_row(job.get("jd", "")),
+        ])
+
+    if rows:
+        _with_retry(ws.append_rows, rows, value_input_option="USER_ENTERED")
+    _compact_rows(sh, [ws])
+
+    print(f"  Sheets: +{len(rows)} listing(s)")
+    return len(rows)
 
 def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
     client = _get_client()

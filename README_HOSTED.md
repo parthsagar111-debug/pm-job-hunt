@@ -5,6 +5,7 @@
 |---|---|---|---|
 | **PM Eval — India Jobs** | `pm_eval_hosted.py` | India PM jobs — LinkedIn + Naukri + Hirist + IIMJobs, last 24h | `PM_EVAL_SPREADSHEET_ID` |
 | **Gulf PM Eval** | `gulf_eval_hosted.py` | PM jobs in UAE, Saudi Arabia, Qatar, Bahrain, Oman, Kuwait — LinkedIn, last 24h or last week | `GULF_SPREADSHEET_ID` |
+| **Global Visa PM** | `global_visa_hosted.py` | PM jobs worldwide (except India + Gulf) whose JD offers visa sponsorship — LinkedIn, last 24h | `GLOBAL_VISA_SPREADSHEET_ID` |
 
 Both are triggered externally by cron-job.org calling GitHub's `workflow_dispatch`
 API (not GitHub's own built-in cron). PM Eval currently runs every 30 minutes.
@@ -14,6 +15,14 @@ The Gulf feed replaces the old worldwide "LinkedIn Global" feed. GCC employers
 sponsor the work visa as standard, so it doesn't check each job for visa
 support — instead it skips roles restricted to local nationals
 (Emiratisation/Saudization) or requiring Arabic.
+
+**Global Visa PM** gives no Apply/Maybe/Skip judgment. It searches ~128 countries
+(US split by state when LinkedIn's ~1000-result cap bites), reads each JD from
+LinkedIn's guest endpoint, and keeps a job only when Claude Haiku confirms the
+employer offers visa sponsorship — `YES`, or `CONDITIONAL` for "may be available".
+Relocation support alone doesn't qualify. Only the visa-related lines of the JD
+are sent to Claude, which keeps a full run at roughly $0.08. A 24h sweep takes
+~2h15m and yields ~10–15 sponsoring roles a day.
 
 ---
 
@@ -47,6 +56,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Full contents of the downloaded JSON file   |
 | `PM_EVAL_SPREADSHEET_ID`      | Sheet ID for "PM Job Eval"                  |
 | `GULF_SPREADSHEET_ID`         | Sheet ID for "Gulf PM Eval"                 |
+| `GLOBAL_VISA_SPREADSHEET_ID`  | Sheet ID for "Global Visa PM"               |
 | `NTFY_TOPIC`                  | Your ntfy topic name (e.g. `parth-pm-jobs`) |
 
 ---
