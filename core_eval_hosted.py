@@ -13,6 +13,7 @@ Differences from local core_eval.py:
 - Selenium stays for Naukri/Hirist/IIMJobs (works headless on Ubuntu CI)
 """
 
+import random
 import re
 import requests
 import urllib.parse
@@ -248,6 +249,19 @@ def _parse_li_cards(html: str) -> tuple[list, set]:
 
 LI_MAX_EXTRA_PAGES = 25   # paginate=True only — LinkedIn serves 10 results per extra page
 
+# ── Pacing. Measured 2026-09-17 across a full global sweep: 2 rate-limit blocks in
+# ~4,100 requests at 1.5s/page + 5-9s between searches, and >60% of that run's 115
+# minutes was these sleeps. Halved on that evidence; _li_get_with_retry still backs
+# off 45-95s on a 429, so the downside of being slightly too fast is a pause, not a
+# failed run. Tune here, not at the call sites.
+LI_PAGE_SLEEP  = 0.6          # between pagination pages
+LI_SEARCH_GAP  = (2.5, 4.0)   # between one search/keyword and the next
+LI_JD_SLEEP    = 0.3          # between guest-endpoint JD fetches
+
+def li_search_gap() -> float:
+    """Randomised so the request pattern isn't a metronome."""
+    return random.uniform(*LI_SEARCH_GAP)
+
 def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h", location=SEARCH_LOCATION,
                    paginate=False, limit=TOP_N):
     """
@@ -270,7 +284,7 @@ def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h", location=SEARCH_LOC
 
     if paginate:
         for _ in range(LI_MAX_EXTRA_PAGES):
-            time.sleep(2)
+            time.sleep(LI_PAGE_SLEEP)
             r = _li_get_with_retry(
                 "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
                 f"?{query}&start={len(all_ids)}")
@@ -543,7 +557,7 @@ def fetch_linkedin_multi(keyword=SEARCH_KEYWORD, time_range="24h") -> list:
         except Exception as e:
             print(f"error: {e}")
         # Randomised delay — reduces 429 rate-limit errors vs. a fixed interval
-        delay = random.uniform(8, 14)
+        delay = li_search_gap()
         print(f"    ⏳ waiting {delay:.1f}s before next keyword...")
         time.sleep(delay)
     return all_hits
@@ -562,6 +576,62 @@ SOURCE_ICONS = {
     "IIMJobs":        "🟤",
     "LinkedIn Gulf":  "🌴",
 }
+
+# ─────────────────────────────────────────────
+# FINGERPRINT — second dedup key, alongside URL
+# ─────────────────────────────────────────────
+# A re-posted role gets a fresh LinkedIn id and a fresh URL, so URL-only dedup
+# pays Claude for it again. company|title|country catches that. Country (not
+# city) because the same role is often posted per-city: Anthropic's PM Growth
+# appeared in Seattle, SF and NY on one run.
+_US_STATE_TOKENS = {
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "dc", "fl", "ga", "hi", "id", "il", "in",
+    "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh",
+    "nj", "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut",
+    "vt", "va", "wa", "wv", "wi", "wy", "united states", "usa",
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut",
+    "delaware", "district of columbia", "florida", "georgia", "hawaii", "idaho", "illinois",
+    "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts",
+    "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota",
+    "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
+    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+    "west virginia", "wisconsin", "wyoming",
+}
+
+def _norm(s: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", (s or "").lower()).split())
+
+def location_country(location: str) -> str:
+    """Coarse country token from a LinkedIn location string. US listings carry a
+    state rather than a country ("Seattle, WA"), so those collapse to one token."""
+    first = (location or "").split("/")[0]            # merged multi-city rows
+    last  = _norm(first.split(",")[-1])
+    if last in _US_STATE_TOKENS:
+        return "united states"
+    return last
+
+def job_fingerprint(company: str, title: str, location: str) -> str:
+    return f"{_norm(company)}|{_norm(title)}|{location_country(location)}"
+
+
+def fetch_jd_guest(job_id_or_url: str) -> str:
+    """LinkedIn JD via the logged-out guest endpoint — no browser, no Playwright.
+
+    Accepts a job dict's "li_<id>" job_id, a bare numeric id, or a /jobs/view/ URL.
+    Returns "" on any failure; the caller decides what to do about it.
+    """
+    m = re.search(r"(\d{8,})", job_id_or_url or "")
+    if not m:
+        return ""
+    r = _li_get_with_retry(
+        f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{m.group(1)}")
+    if r is None:
+        return ""
+    el = BeautifulSoup(r.text, "html.parser").select_one(
+        "div.show-more-less-html__markup, div.description__text")
+    return el.get_text("\n", strip=True) if el else ""
+
 
 def fetch_jd_text(job: dict) -> str:
     """Fetch and extract the full job description text from the job URL.
@@ -582,10 +652,20 @@ def fetch_jd_text(job: dict) -> str:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         if source.startswith("LinkedIn"):   # "LinkedIn" (India) and "LinkedIn Gulf"
-            # Use Playwright — reuses a single browser session across all JD fetches
-            # in the run, avoiding the per-connection rate limiting curl_cffi hit.
-            from playwright_browser import fetch_jd_playwright
-            return fetch_jd_playwright(url)
+            # Guest endpoint first: no browser at all, ~1.4s/job, and it fetched
+            # 2570 of 2575 JDs in the 2026-09-17 global probe. Playwright stays as
+            # a fallback only — it costs a chromium install per workflow run and a
+            # persistent browser process for what is now a plain HTTP GET.
+            jd = fetch_jd_guest(job.get("job_id", "") or url)
+            if jd:
+                return jd
+            print(f"  ⚠️  JD fetch ({source}): guest endpoint empty — falling back to Playwright.")
+            try:
+                from playwright_browser import fetch_jd_playwright
+                return fetch_jd_playwright(url)
+            except Exception as e:
+                print(f"  ⚠️  JD fetch ({source}): Playwright fallback failed — {type(e).__name__}: {e}")
+                return ""
 
         elif source in ("Naukri", "Hirist/IIMJobs", "IIMJobs"):
             # Both block plain requests — use Selenium
@@ -688,10 +768,8 @@ Hard Skip ONLY if:
 4. Role title is completely unrelated — project coordinator, account manager, program manager
 5. Clearly requires deep expertise in a domain with zero overlap (e.g. semiconductors, defence)
 
-Respond ONLY in this exact format — no extra text, no preamble:
-Decision: Apply / Maybe / Skip
-Reason: [max 15 words]
-Gap: [biggest gap or None]"""
+Record your answer with the record_decision tool: decision (Apply / Maybe / Skip),
+reason (max 15 words), gap (biggest gap, or "None")."""
 
 
 def _load_api_key() -> str:
@@ -714,6 +792,73 @@ def _load_api_key() -> str:
         raise RuntimeError("Set ANTHROPIC_API_KEY env var or add key to config.py")
     return key
 
+
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+ANTHROPIC_URL   = "https://api.anthropic.com/v1/messages"
+
+class ClaudeSchemaError(RuntimeError):
+    """Claude replied, but not in the shape the caller demanded."""
+
+def claude_structured(prompt: str, tool_name: str, tool_description: str,
+                      input_schema: dict, max_tokens: int = 300,
+                      timeout: int = 30) -> tuple[dict, dict]:
+    """
+    Call Claude and get back a dict matching input_schema, via a forced tool call.
+
+    Every failure — HTTP error, no tool_use block, missing required field, value
+    outside its enum — raises. Callers must translate that into a retryable
+    "Error", never into a real decision: string-prefix parsing used to fall back
+    to Skip on a malformed reply, and since Skip is written to the Sheet and
+    deduped forever, one bad response silently blackholed a job for good.
+
+    Returns (tool input dict, usage dict).
+    """
+    resp = requests.post(
+        ANTHROPIC_URL,
+        headers={"Content-Type": "application/json", "x-api-key": _load_api_key(),
+                 "anthropic-version": "2023-06-01"},
+        json={
+            "model":       ANTHROPIC_MODEL,
+            "max_tokens":  max_tokens,
+            "messages":    [{"role": "user", "content": prompt}],
+            "tools":       [{"name": tool_name, "description": tool_description,
+                             "input_schema": input_schema}],
+            "tool_choice": {"type": "tool", "name": tool_name},
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    block = next((b for b in data.get("content", [])
+                  if b.get("type") == "tool_use" and b.get("name") == tool_name), None)
+    if block is None:
+        raise ClaudeSchemaError(f"no {tool_name} tool_use block in response "
+                                f"(stop_reason={data.get('stop_reason')!r})")
+    payload = block.get("input") or {}
+    if not isinstance(payload, dict):
+        raise ClaudeSchemaError(f"{tool_name} input was {type(payload).__name__}, not an object")
+
+    props = input_schema.get("properties", {})
+    for field in input_schema.get("required", []):
+        if field not in payload:
+            raise ClaudeSchemaError(f"{tool_name} input missing required field {field!r}")
+        allowed = props.get(field, {}).get("enum")
+        if allowed and payload[field] not in allowed:
+            raise ClaudeSchemaError(f"{field}={payload[field]!r} is not one of {allowed}")
+    return payload, data.get("usage", {})
+
+
+EVAL_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decision": {"type": "string", "enum": ["Apply", "Maybe", "Skip"],
+                     "description": "The recommendation for this candidate."},
+        "reason":   {"type": "string", "description": "One line, max 15 words."},
+        "gap":      {"type": "string", "description": "Biggest gap, or 'None'."},
+    },
+    "required": ["decision", "reason", "gap"],
+}
 
 def evaluate_job(job: dict, prompt_template: str = None) -> dict:
     """Fetch full JD then call Claude API to evaluate. Returns dict with decision/reason/gap/jd.
@@ -745,50 +890,24 @@ def evaluate_job(job: dict, prompt_template: str = None) -> dict:
     prompt = (prompt_template or EVAL_PROMPT) + "\n\n" + job_context
 
     try:
-        api_key = _load_api_key()
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type":      "application/json",
-                "x-api-key":         api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 150,
-                "messages":   [{"role": "user", "content": prompt}],
-            },
-            timeout=25,
+        payload, _usage = claude_structured(
+            prompt,
+            tool_name="record_decision",
+            tool_description="Record the Apply/Maybe/Skip decision for this job listing.",
+            input_schema=EVAL_TOOL_SCHEMA,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        text = "".join(
-            block.get("text", "") for block in data.get("content", [])
-            if block.get("type") == "text"
-        ).strip()
-
-        result = {"decision": "Skip", "reason": "", "gap": "", "jd": jd_text}
-        for line in text.splitlines():
-            line = line.strip()
-            if line.lower().startswith("decision:"):
-                raw = line.split(":", 1)[1].strip()
-                if "apply" in raw.lower():   result["decision"] = "Apply"
-                elif "maybe" in raw.lower(): result["decision"] = "Maybe"
-                else:                        result["decision"] = "Skip"
-            elif line.lower().startswith("reason:"):
-                result["reason"] = line.split(":", 1)[1].strip()
-            elif line.lower().startswith("gap:"):
-                result["gap"] = line.split(":", 1)[1].strip()
-        return result
+        return {"decision": payload["decision"], "reason": payload["reason"],
+                "gap": payload["gap"], "jd": jd_text}
 
     except Exception as e:
-        print(f"    ⚠️  Eval error: {e}")
+        print(f"    ⚠️  Eval error: {type(e).__name__}: {e}")
         # IMPORTANT: this must NOT be "Skip". A "Skip" decision gets written to the
         # Sheet and permanently marked as seen (dedup is URL-presence based), so a
-        # billing/auth/network failure would silently and permanently blackhole every
-        # job it touched — they'd never be evaluated again even after the API key
+        # billing/auth/network/schema failure would silently and permanently blackhole
+        # every job it touched — they'd never be evaluated again even after the API key
         # works again. "Error" is filtered out before writing, so these jobs get
-        # retried on the next run instead.
+        # retried on the next run instead. Since the decision now comes from a forced
+        # tool call, a malformed reply raises instead of quietly reading as Skip.
         return {"decision": "Error", "reason": f"Evaluation failed: {e}", "gap": "—", "jd": jd_text}
 
 

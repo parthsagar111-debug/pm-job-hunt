@@ -26,9 +26,9 @@ from core_eval_hosted import (
     SOURCES, SOURCE_ICONS,
     sort_newest_first,
     within_24hrs, evaluate_batch,
-    SEARCH_KEYWORD,
+    SEARCH_KEYWORD, job_fingerprint,
 )
-from sheets_writer import save_eval_jobs, load_seen_urls
+from sheets_writer import save_eval_jobs, load_seen_keys
 from ntfy_notify import run_summary
 from playwright_browser import close_browser
 from datetime import datetime
@@ -54,8 +54,8 @@ def main():
     # Claude API tokens for nothing. Load the real seen-set from the Sheet now,
     # not just at write time.
     try:
-        seen = load_seen_urls(SPREADSHEET_ID)
-        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
+        seen, seen_keys = load_seen_keys(SPREADSHEET_ID)
+        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_keys)} known role key(s) from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}).")
         print("  Aborting run rather than risk re-evaluating everything at full API cost.")
@@ -76,6 +76,12 @@ def main():
             for job in jobs:
                 if job.get("url", "").split("?")[0] in seen:
                     continue
+                # Same role re-posted under a new id — already judged, don't pay again.
+                fp = job_fingerprint(job.get("company", ""), job.get("title", ""),
+                                     job.get("location", ""))
+                if fp in seen_keys:
+                    continue
+                seen_keys.add(fp)
                 co = job.get("company", "").lower().strip()
                 if company_counts.get(co, 0) >= 2:
                     continue

@@ -41,13 +41,13 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import requests
-from bs4 import BeautifulSoup
 
 from core_eval_hosted import (
-    _li_get_with_retry, _parse_li_cards, _LI_TPR, _load_api_key,
+    _li_get_with_retry, _parse_li_cards, _LI_TPR, _load_api_key, claude_structured,
+    fetch_jd_guest, job_fingerprint, li_search_gap, LI_PAGE_SLEEP, LI_JD_SLEEP,
 )
 from gulf_eval_hosted import is_gulf_location
-from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS
+from sheets_writer import save_visa_jobs, load_seen_keys, TAB_LISTINGS
 from ntfy_notify import push
 
 SPREADSHEET_ID = os.environ.get("GLOBAL_VISA_SPREADSHEET_ID", "")
@@ -125,7 +125,7 @@ def search(location: str, keyword="Product Manager", time_range="24h"):
     hits, ids = _parse_li_cards(r.text)
     pages = 1
     while pages < 101:
-        time.sleep(1.5)
+        time.sleep(LI_PAGE_SLEEP)
         r = _li_get_with_retry("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
                                f"?{q}&start={len(ids)}")
         if r is None:
@@ -138,11 +138,7 @@ def search(location: str, keyword="Product Manager", time_range="24h"):
         pages += 1
     return hits, len(ids), pages
 
-def _title_company_key(job: dict) -> str:
-    norm = lambda s: " ".join(re.sub(r"[^\w]+", " ", (s or "").lower()).split())
-    return norm(job.get("title")) + "|" + norm(job.get("company"))
-
-def collect_jobs(seen: set) -> list:
+def collect_jobs(seen: set, seen_keys: set) -> list:
     """One search per country (US by state if it hits the cap), keeping new product
     roles outside India/the Gulf. A role posted in several cities is kept once, with
     the other locations appended — Anthropic's PM Growth showed up in 3 US cities."""
@@ -159,7 +155,9 @@ def collect_jobs(seen: set) -> list:
                 continue
             if not is_product_role(j["title"]):
                 continue
-            key = _title_company_key(j)
+            key = job_fingerprint(j.get("company", ""), j.get("title", ""), j.get("location", ""))
+            if key in seen_keys:      # re-post of a role already in the Sheet
+                continue
             if key in by_key:
                 kept_job = by_key[key]
                 if kept_job is not None and j["location"] not in kept_job["location"]:
@@ -175,7 +173,7 @@ def collect_jobs(seen: set) -> list:
             kept += 1
         print(f"  {label:<34} scanned {scanned:>4} / {pages:>3} pages → +{kept}"
               + ("   ⚠️ near LinkedIn's 1000 cap" if scanned >= CAP_NEAR else ""), flush=True)
-        time.sleep(random.uniform(5, 9))
+        time.sleep(li_search_gap())
         return scanned
 
     for country in COUNTRIES:
@@ -189,16 +187,7 @@ def collect_jobs(seen: set) -> list:
                 run(f"US / {st}", f"{st}, United States")
     return list(jobs.values())
 
-# ─────────────────────────────────────────────
-# JD FETCH — guest endpoint, no browser (~1.8s/job in the probe, 2570/2575 succeeded)
-# ─────────────────────────────────────────────
-def fetch_jd(job_id: str) -> str:
-    r = _li_get_with_retry(f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}")
-    if r is None:
-        return ""
-    el = BeautifulSoup(r.text, "html.parser").select_one(
-        "div.show-more-less-html__markup, div.description__text")
-    return el.get_text("\n", strip=True) if el else ""
+# JD fetch lives in core as fetch_jd_guest() — all three feeds share it now.
 
 # "relocation" is deliberately absent: relocation alone doesn't qualify, so a JD
 # that only offers relocation never reaches Claude.
@@ -247,39 +236,40 @@ Answer NO for everything else, including:
 - "Visa" as a card brand, "sponsor" meaning retirement plans, events, or security clearance
 - visa not really addressed
 
-Respond in exactly this format, nothing else:
-VISA: YES / CONDITIONAL / NO
-EVIDENCE: [shortest exact quote from the text supporting the answer, or None]"""
+Record your answer with the record_visa tool: visa (YES / CONDITIONAL / NO) and
+evidence (the shortest exact quote from the text supporting the answer, or "None")."""
+
+VISA_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "visa":     {"type": "string", "enum": ["YES", "CONDITIONAL", "NO"],
+                     "description": "Does the employer offer visa sponsorship for this role?"},
+        "evidence": {"type": "string",
+                     "description": "Shortest exact quote supporting the answer, or 'None'."},
+    },
+    "required": ["visa", "evidence"],
+}
 
 USAGE = Counter()
 
 def classify(job: dict, excerpt: str) -> tuple[str, str]:
+    """Returns (YES|CONDITIONAL|NO|ERROR, evidence). ERROR is never written to the
+    Sheet, so the job is retried on the next run rather than silently dropped."""
     context = (f"Job Title: {job['title']}\nCompany: {job['company']}\n"
                f"Location: {job['location']}\n\nVisa-related lines from the job description:\n{excerpt}")
     last_err = ""
     for attempt in range(3):
         try:
-            resp = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"Content-Type": "application/json", "x-api-key": _load_api_key(),
-                         "anthropic-version": "2023-06-01"},
-                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 120,
-                      "messages": [{"role": "user", "content": CLASSIFY_PROMPT + "\n\n" + context}]},
-                timeout=30,
+            payload, usage = claude_structured(
+                CLASSIFY_PROMPT + "\n\n" + context,
+                tool_name="record_visa",
+                tool_description="Record whether this listing offers visa sponsorship.",
+                input_schema=VISA_TOOL_SCHEMA,
+                max_tokens=200,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            USAGE["input_tokens"]  += data.get("usage", {}).get("input_tokens", 0)
-            USAGE["output_tokens"] += data.get("usage", {}).get("output_tokens", 0)
-            text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-            verdict, evidence = "ERROR", ""
-            for line in text.splitlines():
-                if line.upper().startswith("VISA:"):
-                    v = line.split(":", 1)[1].strip().upper()
-                    verdict = "CONDITIONAL" if "CONDITIONAL" in v else "YES" if "YES" in v else "NO"
-                elif line.upper().startswith("EVIDENCE:"):
-                    evidence = line.split(":", 1)[1].strip()
-            return verdict, evidence
+            USAGE["input_tokens"]  += usage.get("input_tokens", 0)
+            USAGE["output_tokens"] += usage.get("output_tokens", 0)
+            return payload["visa"], payload["evidence"]
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
             time.sleep(5 * (attempt + 1))
@@ -305,14 +295,14 @@ def main():
     _load_api_key()   # fail fast if the key is missing
 
     try:
-        seen = load_seen_urls(SPREADSHEET_ID, tabs=(TAB_LISTINGS,))
-        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
+        seen, seen_keys = load_seen_keys(SPREADSHEET_ID, tabs=(TAB_LISTINGS,))
+        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_keys)} known role key(s) from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}). Aborting.")
         sys.exit(1)
 
     print("\n  [1/2] Searching LinkedIn per country...")
-    jobs = collect_jobs(seen)
+    jobs = collect_jobs(seen, seen_keys)
     print(f"\n  {len(jobs)} new product role(s) after {(time.time()-T0)/60:.0f} min of searching")
 
     print("\n  [2/2] Fetching JDs and checking visa support...")
@@ -323,8 +313,8 @@ def main():
             print(f"  ⏱ runtime limit reached at {i}/{len(jobs)} — saving what's done; "
                   f"the rest will be picked up next run.", flush=True)
             break
-        jd = fetch_jd(job["job_id"][3:])
-        time.sleep(1)
+        jd = fetch_jd_guest(job["job_id"])
+        time.sleep(LI_JD_SLEEP)
         if len(jd) < 100:
             jd_fail += 1
             continue

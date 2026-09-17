@@ -142,6 +142,43 @@ def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE
     print(f"  [sheets] Dedup: {len(seen)} existing URLs loaded")
     return seen
 
+def _load_seen_fingerprints(sh: gspread.Spreadsheet, tabs: tuple) -> set:
+    """Company|title|country keys for everything already in the Sheet. Second dedup
+    key alongside URL: a re-posted role gets a new LinkedIn id, so URL alone lets it
+    through and we pay Claude to judge it again. Columns are found by header name,
+    same as the URL read, so column order can change safely."""
+    from core_eval_hosted import job_fingerprint
+
+    keys = set()
+    for tab in tabs:
+        try:
+            ws      = sh.worksheet(tab)
+            headers = _with_retry(ws.row_values, 1)
+            if not all(h in headers for h in ("Title", "Company", "Location")):
+                print(f"  [sheets] Warning: {tab} lacks Title/Company/Location — no fingerprint dedup for it.")
+                continue
+            cols = {h: _with_retry(ws.col_values, headers.index(h) + 1)[1:]
+                    for h in ("Title", "Company", "Location")}
+            for title, company, location in zip(cols["Title"], cols["Company"], cols["Location"]):
+                if title and company:
+                    keys.add(job_fingerprint(company, title, location))
+        except gspread.WorksheetNotFound:
+            pass
+        except Exception as e:
+            print(f"  [sheets] Warning: fingerprint read failed for {tab}: {e}")
+    return keys
+
+def load_seen_keys(spreadsheet_id: str,
+                   tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> tuple[set, set]:
+    """(urls, fingerprints) for everything already in the Sheet. Callers filter on
+    both BEFORE evaluating, so neither a repeat URL nor a re-post costs API tokens."""
+    client = _get_client()
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
+    urls   = _load_seen_urls(sh, tabs=tabs)
+    fps    = _load_seen_fingerprints(sh, tabs=tabs)
+    print(f"  [sheets] Dedup: {len(fps)} existing company|title|country key(s) loaded")
+    return urls, fps
+
 def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set:
     """
     Public entry point: open the sheet and return the set of already-seen job URLs.

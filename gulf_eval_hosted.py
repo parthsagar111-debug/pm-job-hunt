@@ -29,8 +29,8 @@ import random
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core_eval_hosted import fetch_linkedin, evaluate_batch
-from sheets_writer import save_eval_jobs, load_seen_urls
+from core_eval_hosted import fetch_linkedin, evaluate_batch, job_fingerprint, li_search_gap
+from sheets_writer import save_eval_jobs, load_seen_keys
 from ntfy_notify import run_summary
 from playwright_browser import close_browser
 from datetime import datetime
@@ -186,22 +186,17 @@ Hard Skip ONLY if:
 6. Role title is completely unrelated — project coordinator, account manager, program manager
 7. Clearly requires deep expertise in a domain with zero overlap (e.g. oil & gas engineering, defence)
 
-Respond ONLY in this exact format — no extra text, no preamble:
-Decision: Apply / Maybe / Skip
-Reason: [max 15 words]
-Gap: [biggest gap or None]"""
+Record your answer with the record_decision tool: decision (Apply / Maybe / Skip),
+reason (max 15 words), gap (biggest gap, or "None")."""
 
 # ─────────────────────────────────────────────
 # FETCH
 # ─────────────────────────────────────────────
-def _title_company_key(job: dict) -> str:
-    norm = lambda s: " ".join(re.sub(r"[^\w]+", " ", (s or "").lower()).split())
-    return norm(job.get("title")) + "|" + norm(job.get("company"))
-
-def fetch_gulf_jobs(time_range: str, seen: set) -> list:
+def fetch_gulf_jobs(time_range: str, seen: set, seen_keys: set = None) -> list:
     all_jobs       = []
     seen_ids       = set()
     company_counts = {}
+    seen_keys      = seen_keys if seen_keys is not None else set()
     # Regional roles get posted once per country under different LinkedIn ids
     # (e.g. Stryker "Product Manager, Medical Devices - META" in both Dubai and
     # Riyadh). Keep the first copy and note the other locations on it. Keys are
@@ -222,7 +217,11 @@ def fetch_gulf_jobs(time_range: str, seen: set) -> list:
                 if not is_gulf_location(job["location"]):
                     off_region += 1
                     continue
-                key = _title_company_key(job)
+                key = job_fingerprint(job.get("company", ""), job.get("title", ""),
+                                      job.get("location", ""))
+                if key in seen_keys:      # re-post of a role already in the Sheet
+                    dupes += 1
+                    continue
                 if key in by_title_company:
                     kept = by_title_company[key]
                     if kept is not None and job["location"] not in kept["location"]:
@@ -244,7 +243,7 @@ def fetch_gulf_jobs(time_range: str, seen: set) -> list:
             if off_region: extras.append(f"{off_region} outside the Gulf dropped")
             if dupes:      extras.append(f"{dupes} same title+company as another country dropped")
             print(f"    → {new} new" + (f"  ({'; '.join(extras)})" if extras else ""))
-            time.sleep(random.uniform(8, 14))   # spacing reduces LinkedIn 429s
+            time.sleep(li_search_gap())   # spacing reduces LinkedIn 429s
     return all_jobs
 
 # ─────────────────────────────────────────────
@@ -267,14 +266,14 @@ def main():
 
     # Dedup before evaluation — evaluating already-seen jobs burns Claude API tokens.
     try:
-        seen = load_seen_urls(SPREADSHEET_ID)
-        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
+        seen, seen_keys = load_seen_keys(SPREADSHEET_ID)
+        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_keys)} known role key(s) from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}).")
         print("  Aborting run rather than risk re-evaluating everything at full API cost.")
         sys.exit(1)
 
-    all_jobs = fetch_gulf_jobs(TIME_RANGE, seen)
+    all_jobs = fetch_gulf_jobs(TIME_RANGE, seen, seen_keys)
 
     print(f"\n{'='*55}")
     print(f"  Total: {len(all_jobs)} jobs  |  Evaluating with Claude AI...")
