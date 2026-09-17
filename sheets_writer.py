@@ -115,7 +115,7 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
 def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
 
-def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set:
+def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set[str]:
     """Reads only the URL column (found by header name) on each tab — not a
     full-grid scan. Skip carries JD text too (see _jd_for_row), up to 45,000
     chars per cell, and this runs on every single scraper invocation — a full
@@ -142,7 +142,7 @@ def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE
     print(f"  [sheets] Dedup: {len(seen)} existing URLs loaded")
     return seen
 
-def _load_seen_fingerprints(sh: gspread.Spreadsheet, tabs: tuple) -> set:
+def _load_seen_fingerprints(sh: gspread.Spreadsheet, tabs: tuple) -> set[str]:
     """Company|title|country keys for everything already in the Sheet. Second dedup
     key alongside URL: a re-posted role gets a new LinkedIn id, so URL alone lets it
     through and we pay Claude to judge it again. Columns are found by header name,
@@ -169,7 +169,7 @@ def _load_seen_fingerprints(sh: gspread.Spreadsheet, tabs: tuple) -> set:
     return keys
 
 def load_seen_keys(spreadsheet_id: str,
-                   tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> tuple[set, set]:
+                   tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> tuple[set[str], set[str]]:
     """(urls, fingerprints) for everything already in the Sheet. Callers filter on
     both BEFORE evaluating, so neither a repeat URL nor a re-post costs API tokens."""
     client = _get_client()
@@ -198,7 +198,7 @@ def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB
 
 ROW_HEIGHT_PX = 21   # Sheets' default single-line row height
 
-def _compact_rows(sh: gspread.Spreadsheet, worksheets: list):
+def _compact_rows(sh: gspread.Spreadsheet, worksheets: list) -> None:
     """Keep every data row one line tall. The JD cell is multi-line text, and
     Sheets auto-grows a row to fit newlines — so clip wrapping and pin the row
     height on all data rows. Applied to the whole tab each run (one request),
@@ -235,7 +235,7 @@ def _compact_rows(sh: gspread.Spreadsheet, worksheets: list):
     except Exception as e:
         print(f"  [sheets] Warning: couldn't compact row heights ({e}) — rows saved fine.")
 
-def save_visa_jobs(spreadsheet_id: str, jobs: list) -> int:
+def save_visa_jobs(spreadsheet_id: str, jobs: list[dict]) -> int:
     """Global visa feed: append rows to the single Listings tab. Each job carries
     visa_verdict ("YES"/"CONDITIONAL") and visa_evidence. Returns rows written."""
     client = _get_client()
@@ -270,7 +270,7 @@ def save_visa_jobs(spreadsheet_id: str, jobs: list) -> int:
     print(f"  Sheets: +{len(rows)} listing(s)")
     return len(rows)
 
-def save_eval_jobs(spreadsheet_id: str, jobs: list) -> tuple[int, int, int]:
+def save_eval_jobs(spreadsheet_id: str, jobs: list[dict]) -> tuple[int, int, int]:
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
     seen   = _load_seen_urls(sh)

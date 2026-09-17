@@ -15,6 +15,7 @@ Differences from local core_eval.py:
 
 import random
 import re
+from typing import Callable
 import requests
 import urllib.parse
 import time
@@ -118,7 +119,7 @@ def within_24hrs(job: dict) -> bool:
 def within_week(job: dict) -> bool:
     return _within_minutes(job, 10080)
 
-def sort_newest_first(jobs: list) -> list:
+def sort_newest_first(jobs: list[dict]) -> list[dict]:
     def key(j):
         dt = j.get("posted_dt", "")
         if dt: return dt
@@ -160,7 +161,7 @@ def summary_notify(keyword: str, n_apply: int, n_maybe: int, n_skip: int):
 # ─────────────────────────────────────────────
 # SELENIUM DRIVER
 # ─────────────────────────────────────────────
-def make_driver():
+def make_driver() -> webdriver.Chrome:
     opts = Options()
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
@@ -198,7 +199,7 @@ _LI_TPR = {
     "week": "r604800",
 }
 
-def _li_get_with_retry(url: str):
+def _li_get_with_retry(url: str):   # -> curl_cffi/requests Response | None
     """GET any LinkedIn URL through the shared rate limiter, retrying on 429/errors.
     Returns the response, or None. Every LinkedIn call in every feed goes through
     here, which is what makes one global request budget possible."""
@@ -231,7 +232,7 @@ def _li_get_with_retry(url: str):
     print(f"  [LinkedIn] ERROR: gave up after 3 attempts (rate limited)")
     return None
 
-def _parse_li_cards(html: str) -> tuple[list, set]:
+def _parse_li_cards(html: str) -> tuple[list[dict], set[str]]:
     """Returns (PM-role jobs on the page, every job id on the page — PM or not)."""
     soup = BeautifulSoup(html, "html.parser")
     hits, page_ids = [], set()
@@ -327,8 +328,9 @@ class RateLimiter:
 
 LI_LIMITER = RateLimiter()
 
-def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h", location=SEARCH_LOCATION,
-                   paginate=False, limit=TOP_N):
+def fetch_linkedin(keyword: str = SEARCH_KEYWORD, time_range: str = "24h",
+                   location: str = SEARCH_LOCATION, paginate: bool = False,
+                   limit: int = TOP_N) -> list[dict]:
     """
     The main search page returns ~60 results max. With paginate=True, keeps
     pulling LinkedIn's guest "see more" endpoint until it runs dry — needed for
@@ -367,7 +369,7 @@ def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h", location=SEARCH_LOC
     print(f"  [LinkedIn] {len(unique)} found{scanned} → top {len(jobs)}")
     return jobs
 
-def fetch_naukri(keyword=SEARCH_KEYWORD, time_range="24h"):
+def fetch_naukri(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list[dict]:
     age_param = "1" if time_range == "24h" else "7"
     slug = keyword.lower().replace(" ", "-")
     url  = f"https://www.naukri.com/{slug}-jobs-in-india?jobAge={age_param}&sortBy=displayDate"
@@ -419,7 +421,7 @@ def fetch_naukri(keyword=SEARCH_KEYWORD, time_range="24h"):
     print(f"  [Naukri] {len(hits)} found → top {len(jobs)}")
     return jobs
 
-def fetch_hirist(keyword=SEARCH_KEYWORD, time_range="24h"):
+def fetch_hirist(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list[dict]:
     kw_lo    = keyword.lower()
     category = HIRIST_CATEGORY_MAP.get(kw_lo, "product-management-jobs")
     url      = f"https://www.hirist.tech/c/{category}.html"
@@ -482,7 +484,7 @@ def fetch_hirist(keyword=SEARCH_KEYWORD, time_range="24h"):
     return jobs
 
 
-def fetch_iimjobs(keyword=SEARCH_KEYWORD, time_range="24h"):
+def fetch_iimjobs(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list[dict]:
     """Scrape IIMJobs for PM roles — tries multiple category URLs with scroll."""
     urls_to_try = [
         "https://www.iimjobs.com/k/product-management-jobs",
@@ -601,7 +603,7 @@ LINKEDIN_KEYWORDS = [
     "Head of Product",
 ]
 
-def fetch_linkedin_multi(keyword=SEARCH_KEYWORD, time_range="24h") -> list:
+def fetch_linkedin_multi(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list[dict]:
     """keyword param ignored — uses LINKEDIN_KEYWORDS list internally."""
     """Run multiple LinkedIn searches with different keywords, deduplicate."""
     import random
@@ -689,9 +691,10 @@ class JobCollector:
     filter is how you end up wondering where all the listings went.
     """
 
-    def __init__(self, seen_urls: set = None, seen_keys: set = None, *,
-                 location_ok=None, title_ok=None, max_per_company: int = 0,
-                 source: str = ""):
+    def __init__(self, seen_urls: set[str] | None = None, seen_keys: set[str] | None = None, *,
+                 location_ok: Callable[[str], bool] | None = None,
+                 title_ok: Callable[[str], bool] | None = None,
+                 max_per_company: int = 0, source: str = ""):
         self.seen_urls       = seen_urls or set()
         self.seen_keys       = set(seen_keys or ())
         self.location_ok     = location_ok
@@ -995,7 +998,7 @@ EVAL_TOOL_SCHEMA = {
     "required": ["decision", "reason", "gap"],
 }
 
-def evaluate_job(job: dict, prompt_template: str = None) -> dict:
+def evaluate_job(job: dict, prompt_template: str | None = None) -> dict:
     """Fetch full JD then call Claude API to evaluate. Returns dict with decision/reason/gap/jd.
     prompt_template defaults to EVAL_PROMPT (India); the Gulf feed passes its own."""
     title    = job.get("title", "")
@@ -1048,7 +1051,7 @@ def evaluate_job(job: dict, prompt_template: str = None) -> dict:
 
 CONSECUTIVE_ERROR_LIMIT = 3  # abort early if the API is clearly down (bad key, no funds, outage)
 
-def evaluate_batch(jobs: list, prompt_template: str = None) -> tuple[list, bool]:
+def evaluate_batch(jobs: list[dict], prompt_template: str | None = None) -> tuple[list[dict], bool]:
     """
     Returns (evaluated_jobs, aborted).
     evaluated_jobs only contains jobs that got a real decision — jobs whose API

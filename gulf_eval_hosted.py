@@ -131,7 +131,7 @@ def mandatory_arabic_line(jd: str) -> str:
                 return line
     return ""
 
-def apply_arabic_override(jobs: list) -> int:
+def apply_arabic_override(jobs: list[dict]) -> int:
     overridden = 0
     for job in jobs:
         ev = job.get("evaluation", {})
@@ -193,7 +193,7 @@ reason (max 15 words), gap (biggest gap, or "None")."""
 # ─────────────────────────────────────────────
 # FETCH
 # ─────────────────────────────────────────────
-def fetch_gulf_jobs(time_range: str, seen: set, seen_keys: set = None) -> list:
+def fetch_gulf_jobs(time_range: str, seen: set[str], seen_keys: set[str] | None = None) -> list[dict]:
     """Search each GCC country and return the new roles. Filtering, dedup and the
     per-company cap live in core's JobCollector, shared with the global feed —
     including collapsing a regional role posted in several countries under
@@ -219,7 +219,7 @@ def fetch_gulf_jobs(time_range: str, seen: set, seen_keys: set = None) -> list:
 # ─────────────────────────────────────────────
 # MAIN — single run, then exit
 # ─────────────────────────────────────────────
-def main():
+def main() -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*55}")
     print(f"  GULF PM EVAL (HOSTED) — {TIME_RANGE}")

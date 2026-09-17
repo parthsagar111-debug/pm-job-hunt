@@ -115,7 +115,8 @@ def is_product_role(title: str) -> bool:
 # ─────────────────────────────────────────────
 # SEARCH
 # ─────────────────────────────────────────────
-def search(location: str, keyword="Product Manager", time_range="24h"):
+def search(location: str, keyword: str = "Product Manager",
+           time_range: str = "24h") -> tuple[list[dict], int, int]:
     """Returns (PM-titled jobs, listings scanned, pages). Paginates to LinkedIn's cap."""
     q = (f"keywords={urllib.parse.quote(keyword)}&location={urllib.parse.quote(location)}"
          f"&f_TPR={_LI_TPR.get(time_range, 'r86400')}&sortBy=DD")
@@ -137,7 +138,7 @@ def search(location: str, keyword="Product Manager", time_range="24h"):
         pages += 1
     return hits, len(ids), pages
 
-def collect_jobs(seen: set, seen_keys: set) -> list:
+def collect_jobs(seen: set[str], seen_keys: set[str]) -> list[dict]:
     """One search per country (US by state if it hits the cap), keeping new product
     roles outside India/the Gulf. A role posted in several cities is kept once, with
     the other locations appended — Anthropic's PM Growth showed up in 3 US cities."""
@@ -262,7 +263,7 @@ def classify(job: dict, excerpt: str) -> tuple[str, str]:
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
-def main():
+def main() -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*60}")
     print(f"  GLOBAL VISA PM FEED — {TIME_RANGE}")

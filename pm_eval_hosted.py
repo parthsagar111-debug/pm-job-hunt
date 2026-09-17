@@ -37,7 +37,7 @@ SPREADSHEET_ID = os.environ.get("PM_EVAL_SPREADSHEET_ID", "")
 # ─────────────────────────────────────────────
 # MAIN — single 24h run, then exit
 # ─────────────────────────────────────────────
-def main():
+def main() -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*55}")
     print(f"  PM EVAL (HOSTED) — 24h catch-up")
