@@ -1,0 +1,42 @@
+name: Gulf PM Eval — UAE / Saudi / Qatar / Bahrain / Oman / Kuwait
+
+on:
+  workflow_dispatch:   # triggered externally by cron-job.org via GitHub API, or manually
+    inputs:
+      time_range:
+        description: 'How far back to scrape — 24h for scheduled runs, week for a 7-day backfill.'
+        required: false
+        default: '24h'
+        type: choice
+        options:
+          - 24h
+          - week
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120   # a week-long backfill fetches + evaluates a few hundred JDs
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements_hosted.txt
+
+      - name: Install Playwright browser
+        run: playwright install chromium --with-deps
+
+      - name: Run Gulf PM Eval
+        env:
+          ANTHROPIC_API_KEY:           ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GULF_SPREADSHEET_ID:         ${{ secrets.GULF_SPREADSHEET_ID }}
+          NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
+          TIME_RANGE:                  ${{ inputs.time_range || '24h' }}
+        run: python gulf_eval_hosted.py

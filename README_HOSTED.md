@@ -1,87 +1,91 @@
-# PM Eval — Hosted Setup (GitHub Actions + Google Sheets + ntfy)
+# PM Job Hunt — Hosted Setup (GitHub Actions + Google Sheets + ntfy)
 
 ## What this runs
-- **pm_eval_hosted.py** — India PM jobs (LinkedIn + Naukri + Hirist + IIMJobs)
+| Workflow | Script | Searches | Sheet secret |
+|---|---|---|---|
+| **PM Eval — India Jobs** | `pm_eval_hosted.py` | India PM jobs — LinkedIn + Naukri + Hirist + IIMJobs, last 24h | `PM_EVAL_SPREADSHEET_ID` |
+| **Gulf PM Eval** | `gulf_eval_hosted.py` | PM jobs in UAE, Saudi Arabia, Qatar, Bahrain, Oman, Kuwait — LinkedIn, last 24h or last week | `GULF_SPREADSHEET_ID` |
 
-Triggered externally by a cron-job.org scheduled job calling GitHub's
-`workflow_dispatch` API (not GitHub's own built-in cron), currently every 30
-minutes. Results → Google Sheets. Summary → ntfy push notification on your phone.
+Both are triggered externally by cron-job.org calling GitHub's `workflow_dispatch`
+API (not GitHub's own built-in cron). PM Eval currently runs every 30 minutes.
+Results → Google Sheets. Summary → ntfy push notification on your phone.
+
+The Gulf feed replaces the old worldwide "LinkedIn Global" feed. GCC employers
+sponsor the work visa as standard, so it doesn't check each job for visa
+support — instead it skips roles restricted to local nationals
+(Emiratisation/Saudization) or requiring Arabic.
 
 ---
 
-## One-time setup: 4 steps
+## One-time setup
 
 ### Step 1 — ntfy app
 1. Install **ntfy** on your phone (free, iOS + Android)
 2. Subscribe to any topic name you choose — e.g. `parth-pm-jobs`
-   (just tap the + button in the app and type the topic name)
-3. Save the topic name — you'll paste it into GitHub Secrets shortly
+3. Save the topic name for the `NTFY_TOPIC` secret
 
 ### Step 2 — Google Cloud service account
 1. Go to https://console.cloud.google.com/ → create or select a project
 2. Search for **Google Sheets API** → Enable
-3. Go to **APIs & Services → Credentials → Create Credentials → Service Account**
-   Give it any name (e.g. `pm-job-bot`). No project role needed.
-4. Open the service account → **Keys** tab → **Add Key → JSON**
-   This downloads a `.json` file — keep it safe, it's your credential.
+3. **APIs & Services → Credentials → Create Credentials → Service Account** (no role needed)
+4. Open the service account → **Keys** tab → **Add Key → JSON** — keep the file safe
 5. Copy the `client_email` from the JSON (looks like `pm-job-bot@project.iam.gserviceaccount.com`)
 
-### Step 3 — Google Sheet
-1. Create a Google Sheet: "PM Job Eval"
-2. Share it with the service account email → Editor access
-3. Copy the Sheet's ID from its URL:
-   `https://docs.google.com/spreadsheets/d/THIS_IS_THE_ID/edit`
+### Step 3 — Google Sheets
+1. Create one Google Sheet per feed, e.g. "PM Job Eval" and "Gulf PM Eval"
+2. Share each with the service account email → Editor access
+3. Copy each Sheet's ID from its URL: `https://docs.google.com/spreadsheets/d/THIS_IS_THE_ID/edit`
 
-### Step 4 — GitHub repo + secrets
-1. Create a new **private** GitHub repo (e.g. `pm-job-hunt`)
-2. Push all files in this folder to it
-3. Go to repo → **Settings → Secrets and variables → Actions → New repository secret**
-   Add these secrets:
+The Apply / Maybe / Skip tabs and their headers are created automatically on the first run.
 
-   | Secret name                  | Value                                      |
-   |------------------------------|--------------------------------------------|
-   | `ANTHROPIC_API_KEY`          | Your Claude API key                        |
-   | `GOOGLE_SERVICE_ACCOUNT_JSON`| Full contents of the downloaded JSON file  |
-   | `PM_EVAL_SPREADSHEET_ID`     | Sheet ID for "PM Job Eval"                 |
-   | `NTFY_TOPIC`                 | Your ntfy topic name (e.g. `parth-pm-jobs`)|
+### Step 4 — GitHub secrets
+Repo → **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret name                   | Value                                       |
+|-------------------------------|---------------------------------------------|
+| `ANTHROPIC_API_KEY`           | Your Claude API key                         |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Full contents of the downloaded JSON file   |
+| `PM_EVAL_SPREADSHEET_ID`      | Sheet ID for "PM Job Eval"                  |
+| `GULF_SPREADSHEET_ID`         | Sheet ID for "Gulf PM Eval"                 |
+| `NTFY_TOPIC`                  | Your ntfy topic name (e.g. `parth-pm-jobs`) |
 
 ---
 
-## First run
-After pushing and adding secrets:
-- Go to your repo → **Actions** tab
-- You'll see "PM Eval — India Jobs"
-- Click it → **Run workflow** (top right) to trigger a manual test run
-- Watch the logs — if it completes green, you're live
+## Running
+- Repo → **Actions** → pick a workflow → **Run workflow**
+- **Gulf PM Eval** has a **time_range** dropdown:
+  - `24h` (default) — what scheduled runs use
+  - `week` — one-off 7-day backfill; takes much longer (up to ~2 hours) because it
+    evaluates every new listing from the past week
+- Scheduled calls from cron-job.org don't pass inputs, so they get `24h`.
 
-After that, it runs automatically on the cron-job.org schedule.
+### Scheduling Gulf PM Eval on cron-job.org
+Same as the PM Eval job, but POST to the `gulf_eval.yml` workflow:
+```
+POST https://api.github.com/repos/parthsagar111-debug/pm-job-hunt/actions/workflows/gulf_eval.yml/dispatches
+Body: {"ref": "master"}
+```
+(To schedule a week run instead, the body would be `{"ref": "master", "inputs": {"time_range": "week"}}`.)
+Every few hours is plenty — the Gulf market posts far fewer PM roles than India.
 
 ---
 
 ## What you'll see
-**In the ntfy app** (after each run):
+**ntfy** (after each run):
 ```
-🗂 PM Eval — run complete
-✅ Apply: 3  |  🤔 Maybe: 11  |  ❌ Skip: 8
+Gulf PM Eval — run complete
+Apply: 3  |  Maybe: 11  |  Skip: 8
 Check your Google Sheet for details.
 ```
-Notification is marked high priority if there are any Apply results.
+High priority if there are any Apply results.
 
-**In Google Sheets** (3 tabs):
-- Apply — jobs Claude recommends applying to
-- Maybe — worth a look, some gap
-- Skip — filtered out (still logged)
-
-Each row has: Month, Date Found, Title, Company, Location, Source, Decision, Reason, Gap, URL
-
-Filter by Month column to see only this month's results.
+**Google Sheets** (3 tabs): Apply · Maybe · Skip.
+Each row: Month, Date Found, Title, Company, Location, Source, Decision, Reason, Gap, URL, JD.
 
 ---
 
-## GitHub Actions free tier limits
-Free tier: 2,000 minutes/month. Each run takes roughly 4-6 minutes.
-At every-30-min cadence (48 runs/day) × ~5 min avg = ~240 min/day = ~7,200 min/month.
-
-**That exceeds the free tier.** If minutes become an issue, widen the cron-job.org
-schedule (e.g. hourly instead of every 30 min) rather than editing
-`pm_eval.yml` directly — the schedule lives in cron-job.org, not in the workflow file.
+## GitHub Actions minutes
+The repo is public, so standard GitHub-hosted runners are free with no monthly
+minute cap. If the repo is ever made private, the free tier is 2,000 min/month —
+PM Eval at every 30 minutes (~4–5 min per run) alone uses ~7,000, so the
+cron-job.org schedules would need widening.

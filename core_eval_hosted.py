@@ -41,15 +41,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from datetime import datetime, timezone, timedelta
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -206,21 +197,12 @@ _LI_TPR = {
     "week": "r604800",
 }
 
-def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h"):
+def _li_get_with_retry(url: str):
+    """GET a LinkedIn search URL, retrying on 429/errors. Returns the response, or None."""
     import random
-    tpr = _LI_TPR.get(time_range, "r86400")
-    url = (
-        f"https://www.linkedin.com/jobs/search/"
-        f"?keywords={urllib.parse.quote(keyword)}"
-        f"&location={urllib.parse.quote(SEARCH_LOCATION)}"
-        f"&f_TPR={tpr}&sortBy=DD"
-    )
-    print(f"  [LinkedIn] fetching ({time_range})...")
-
-    # Retry up to 2 times on 429 with exponential backoff
+    import urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     for attempt in range(3):
         try:
-            import urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             r = _LI_GET(url, headers=HEADERS, timeout=15)
             if r.status_code == 429:
                 wait = 45 + random.uniform(0, 20) + (attempt * 30)
@@ -228,20 +210,26 @@ def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h"):
                 time.sleep(wait)
                 continue
             r.raise_for_status()
-            break
+            return r
         except Exception as e:
             if attempt == 2:
-                print(f"  [LinkedIn] ERROR: {e}"); return []
+                print(f"  [LinkedIn] ERROR: {e}"); return None
             wait = 45 + random.uniform(0, 20)
             print(f"  [LinkedIn] error, retrying in {wait:.0f}s...")
             time.sleep(wait)
-    else:
-        print(f"  [LinkedIn] ERROR: gave up after 3 attempts (429)"); return []
-    soup  = BeautifulSoup(r.text, "html.parser")
-    cards = soup.find_all("div", class_="base-card", limit=200)
-    hits  = []
-    for card in cards:
+    print(f"  [LinkedIn] ERROR: gave up after 3 attempts (429)")
+    return None
+
+def _parse_li_cards(html: str) -> tuple[list, set]:
+    """Returns (PM-role jobs on the page, every job id on the page — PM or not)."""
+    soup = BeautifulSoup(html, "html.parser")
+    hits, page_ids = [], set()
+    for card in soup.find_all("div", class_="base-card", limit=200):
         try:
+            raw_url  = card.find("a", class_="base-card__full-link")["href"]
+            id_match = re.search(r"(\d{8,})", raw_url)
+            num_id   = id_match.group(1) if id_match else raw_url.split("/")[-1]
+            page_ids.add(num_id)
             title    = card.find("h3", class_="base-search-card__title").get_text(strip=True)
             if not is_pm_role(title): continue
             company  = card.find("h4", class_="base-search-card__subtitle").get_text(strip=True)
@@ -249,9 +237,6 @@ def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h"):
             time_tag = card.find("time")
             posted   = time_tag.get_text(strip=True) if time_tag else "N/A"
             posted_dt= time_tag.get("datetime", "") if time_tag else ""
-            raw_url  = card.find("a", class_="base-card__full-link")["href"]
-            id_match = re.search(r"(\d{8,})", raw_url)
-            num_id   = id_match.group(1) if id_match else raw_url.split("/")[-1]
             hits.append({
                 "source": "LinkedIn", "job_id": "li_" + num_id,
                 "title": title, "company": company, "location": location,
@@ -259,8 +244,49 @@ def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h"):
                 "url": f"https://www.linkedin.com/jobs/view/{num_id}",
             })
         except: continue
-    jobs = sort_newest_first(hits)[:TOP_N]
-    print(f"  [LinkedIn] {len(hits)} found → top {len(jobs)}")
+    return hits, page_ids
+
+LI_MAX_EXTRA_PAGES = 25   # paginate=True only — LinkedIn serves 10 results per extra page
+
+def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h", location=SEARCH_LOCATION,
+                   paginate=False, limit=TOP_N):
+    """
+    The main search page returns ~60 results max. With paginate=True, keeps
+    pulling LinkedIn's guest "see more" endpoint until it runs dry — needed for
+    week-long windows, where 60 is nowhere near everything.
+    """
+    tpr   = _LI_TPR.get(time_range, "r86400")
+    query = (
+        f"keywords={urllib.parse.quote(keyword)}"
+        f"&location={urllib.parse.quote(location)}"
+        f"&f_TPR={tpr}&sortBy=DD"
+    )
+    print(f"  [LinkedIn] fetching ({time_range})...")
+    r = _li_get_with_retry(f"https://www.linkedin.com/jobs/search/?{query}")
+    if r is None:
+        return []
+    hits, all_ids = _parse_li_cards(r.text)
+    pages = 1
+
+    if paginate:
+        for _ in range(LI_MAX_EXTRA_PAGES):
+            time.sleep(2)
+            r = _li_get_with_retry(
+                "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+                f"?{query}&start={len(all_ids)}")
+            if r is None:
+                break
+            page_hits, page_ids = _parse_li_cards(r.text)
+            if not page_ids - all_ids:   # empty page, or LinkedIn looping back
+                break
+            all_ids |= page_ids
+            hits.extend(page_hits)
+            pages += 1
+
+    unique = list({j["job_id"]: j for j in hits}.values())   # pages can overlap
+    jobs   = sort_newest_first(unique)[:limit]
+    scanned = f" (scanned {len(all_ids)} listings over {pages} pages)" if paginate else ""
+    print(f"  [LinkedIn] {len(unique)} found{scanned} → top {len(jobs)}")
     return jobs
 
 def fetch_naukri(keyword=SEARCH_KEYWORD, time_range="24h"):
@@ -534,6 +560,7 @@ SOURCE_ICONS = {
     "Naukri":         "🟠",
     "Hirist/IIMJobs": "🟣",
     "IIMJobs":        "🟤",
+    "LinkedIn Gulf":  "🌴",
 }
 
 def fetch_jd_text(job: dict) -> str:
@@ -554,7 +581,7 @@ def fetch_jd_text(job: dict) -> str:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-        if source == "LinkedIn":
+        if source.startswith("LinkedIn"):   # "LinkedIn" (India) and "LinkedIn Gulf"
             # Use Playwright — reuses a single browser session across all JD fetches
             # in the run, avoiding the per-connection rate limiting curl_cffi hit.
             from playwright_browser import fetch_jd_playwright
@@ -688,8 +715,9 @@ def _load_api_key() -> str:
     return key
 
 
-def evaluate_job(job: dict) -> dict:
-    """Fetch full JD then call Claude API to evaluate. Returns dict with decision/reason/gap."""
+def evaluate_job(job: dict, prompt_template: str = None) -> dict:
+    """Fetch full JD then call Claude API to evaluate. Returns dict with decision/reason/gap/jd.
+    prompt_template defaults to EVAL_PROMPT (India); the Gulf feed passes its own."""
     title    = job.get("title", "")
     company  = job.get("company", "")
     location = job.get("location", "")
@@ -714,7 +742,7 @@ def evaluate_job(job: dict) -> dict:
             + "(Note: Full JD could not be fetched - evaluate on title/company only)"
         )
 
-    prompt = EVAL_PROMPT + "\n\n" + job_context
+    prompt = (prompt_template or EVAL_PROMPT) + "\n\n" + job_context
 
     try:
         api_key = _load_api_key()
@@ -762,3 +790,42 @@ def evaluate_job(job: dict) -> dict:
         # works again. "Error" is filtered out before writing, so these jobs get
         # retried on the next run instead.
         return {"decision": "Error", "reason": f"Evaluation failed: {e}", "gap": "—", "jd": jd_text}
+
+
+CONSECUTIVE_ERROR_LIMIT = 3  # abort early if the API is clearly down (bad key, no funds, outage)
+
+def evaluate_batch(jobs: list, prompt_template: str = None) -> tuple[list, bool]:
+    """
+    Returns (evaluated_jobs, aborted).
+    evaluated_jobs only contains jobs that got a real decision — jobs whose API
+    call failed (decision == "Error") are left out so they aren't written to the
+    Sheet and aren't marked as seen; they'll simply be re-fetched and retried next
+    run. If several calls in a row fail, we stop early instead of burning through
+    the whole batch against a dead key/empty balance.
+    """
+    total = len(jobs)
+    ok_jobs = []
+    consecutive_errors = 0
+    for i, job in enumerate(jobs, 1):
+        title   = job.get("title", "")
+        company = job.get("company", "")
+        icon    = SOURCE_ICONS.get(job.get("source", ""), "🔔")
+        print(f"  [{i}/{total}] {icon} 📄 {title} @ {company}...", end=" ", flush=True)
+        ev    = evaluate_job(job, prompt_template)
+        job["evaluation"] = ev
+        badge = {"Apply": "✅", "Maybe": "🤔", "Skip": "❌", "Error": "⚠️"}.get(ev["decision"], "—")
+        print(f"{badge} {ev['decision']}  |  {ev['reason']}")
+
+        if ev["decision"] == "Error":
+            consecutive_errors += 1
+            if consecutive_errors >= CONSECUTIVE_ERROR_LIMIT:
+                print(f"\n  ⚠️  {consecutive_errors} consecutive evaluation failures — "
+                      f"aborting batch early ({total - i} job(s) not attempted). "
+                      f"They'll be retried on the next run.")
+                return ok_jobs, True
+        else:
+            consecutive_errors = 0
+            ok_jobs.append(job)
+
+        time.sleep(0.5)
+    return ok_jobs, False
