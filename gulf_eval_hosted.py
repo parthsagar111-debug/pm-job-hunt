@@ -81,42 +81,53 @@ MAX_PER_COMPANY = 3   # per run — stops one big hirer flooding a week-long bac
 # run it wrote "Arabic fluency is required" as the reason and still said Maybe.
 # Real JDs rarely say "required" either: they just list "Fluency in English and
 # Arabic" under the requirements. So this checks the JD text directly and
-# overrides a non-Skip decision when Arabic appears as a language skill that
-# isn't marked optional, either on its own line or by the section it sits in.
-_ARABIC_SKILL = re.compile(
-    r"\barabic\b.*\b(fluen\w*|speak\w*|spoken|written|native|proficien\w*|communication|language|bilingual)\b"
-    r"|\b(fluen\w*|speak\w*|spoken|written|native|proficien\w*|communication|language|bilingual)\b.*\barabic\b",
-    re.I,
-)
+# overrides a non-Skip decision — but only on positive evidence: Arabic as a
+# spoken/written skill, AND either the line itself says required/must or it
+# sits under a requirements-type heading. The first version defaulted to
+# "mandatory" when it found no heading and matched any "language" mention,
+# which wrongly skipped Apparel Group ("multi-language storefront (including
+# Arabic/RTL)"), Tabby ("Arabic language skills" under a "Bonus points"
+# heading the page split into "B" / "onus points") and Imploy ("Arabic
+# Language Processing" under "Recommended Skills").
+_SKILL_WORDS = (r"(fluen\w*|speak\w*|spoken|written|native|proficien\w*|bilingual|verbal"
+                r"|communication skills?|language skills?|language proficiency)")
+_ARABIC_SKILL = re.compile(rf"\barabic\b.*\b{_SKILL_WORDS}\b|\b{_SKILL_WORDS}\b.*\barabic\b", re.I)
+_NOT_A_SPEAKING_SKILL = re.compile(
+    r"language processing|\bnlp\b|\brtl\b|right[- ]to[- ]left|locali[sz]\w*|storefront", re.I)
 _OPTIONAL = re.compile(
-    r"\b(prefer\w*|plus|advantage\w*|desirable|nice[- ]to[- ]have|bonus|asset|beneficial|ideal\w*|optional"
-    r"|not (required|mandatory|necessary))\b",
+    r"\b(prefer\w*|plus|advantage\w*|desirable|nice[- ]to[- ]have|bonus|asset|beneficial|ideally|optional"
+    r"|recommend\w*|not (required|mandatory|necessary))\b",
     re.I,
 )
-# Headings: "The Ideal Candidate:" is a requirements section, so no "ideal" here.
+_REQUIRED_IN_LINE = re.compile(r"\b(must|mandatory|required|essential)\b", re.I)
+
+# Headings are short lines; bullets usually aren't. Checked walking back from the Arabic line.
 _OPTIONAL_HEADING = re.compile(
-    r"\b(prefer\w*|plus|advantage\w*|desirable|nice[- ]to[- ]have|bonus|optional)\b", re.I)
+    r"\b(prefer\w*|plus|advantage\w*|desirable|nice[- ]to[- ]have|bonus|optional|recommend\w*)\b|onus points", re.I)
 _REQUIRED_HEADING = re.compile(
-    r"\b(requir\w*|qualif\w*|need|must|profile|looking for|skills|experience|about you|who you are)\b", re.I)
+    r"\b(requir\w*|qualif\w*|what you(’|')?ll need|what you will need|you will need|must[- ]haves?|profile"
+    r"|looking for|about you|who you are|what you bring|ideal candidate|to be successful)\b"
+    r"|^(key )?(skills|experience)\b", re.I)
+_OTHER_SECTION_HEADING = re.compile(
+    r"\b(responsibilit\w*|what you(’|')?ll do|what you will do|about the role|the role|about us"
+    r"|benefits|what we offer|duties|accountabilit\w*)\b", re.I)
 
 def mandatory_arabic_line(jd: str) -> str:
     """Returns the JD line making Arabic mandatory, or "" if there isn't one."""
     lines = [l.strip() for l in (jd or "").split("\n")]
     for i, line in enumerate(lines):
-        if not _ARABIC_SKILL.search(line) or _OPTIONAL.search(line):
+        if (not _ARABIC_SKILL.search(line) or _NOT_A_SPEAKING_SKILL.search(line)
+                or _OPTIONAL.search(line)):
             continue
-        # Walk back to the section heading: under "Preferred:"/"Bonus:" it's optional.
-        optional_section = False
+        if _REQUIRED_IN_LINE.search(line):
+            return line
         for prev in reversed(lines[max(0, i - 25):i]):
             if len(prev) > 60:
                 continue   # bullet text, not a heading
-            if _OPTIONAL_HEADING.search(prev):
-                optional_section = True
+            if _OPTIONAL_HEADING.search(prev) or _OTHER_SECTION_HEADING.search(prev):
                 break
             if _REQUIRED_HEADING.search(prev):
-                break
-        if not optional_section:
-            return line
+                return line
     return ""
 
 def apply_arabic_override(jobs: list) -> int:
