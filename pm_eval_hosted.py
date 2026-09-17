@@ -98,6 +98,7 @@ def main() -> None:
 
     if not all_jobs:
         print("  Nothing new this run.")
+        print(f"  Rate: {LI_LIMITER.summary()}")
         run_summary("PM Eval", 0, 0, 0)
         return
 

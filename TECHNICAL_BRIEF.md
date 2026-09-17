@@ -1,7 +1,8 @@
 # PM Job Hunt — technical brief
 
-Written for external review (2026-09-18). Measured numbers come from the probe and
-live runs of 2026-09-17; anything not measured is called out as such.
+Written for external review. Measured numbers come from real runs; anything not
+measured is called out as such. Last updated 2026-09-18, after the optimisation
+pass described in "What changed" below.
 
 ## Purpose
 Three scheduled scrapers that find product-manager jobs for one candidate (India-based,
@@ -9,7 +10,7 @@ Three scheduled scrapers that find product-manager jobs for one candidate (India
 append them to Google Sheets, with a phone push after each run.
 
 Repo: `github.com/parthsagar111-debug/pm-job-hunt` (public, Python 3.11, single
-`master` branch, no test suite).
+`master` branch, 105 offline tests in CI).
 
 ## Execution model
 - **GitHub Actions only.** Every workflow is `workflow_dispatch`-only; GitHub's own
@@ -18,115 +19,140 @@ Repo: `github.com/parthsagar111-debug/pm-job-hunt` (public, Python 3.11, single
   API with a PAT (`{"ref":"master"}`).
 - Each run is a **stateless one-shot process**: start, scrape, judge, append, notify,
   exit. No queue, no database, no retry store.
-- **All state lives in the Google Sheet.** The de-dup set is the URL column, read at
-  process start. A job written to the sheet will never be looked at again.
+- **All state lives in the Google Sheet.** URL + fingerprint dedup sets are read at
+  process start. A job written to the Sheet is never evaluated again.
 
-| Feed | Schedule | Runtime | Per-run volume / cost |
-|---|---|---|---|
-| PM Eval (India) | every 30 min | 4–5 min | ~3 jobs evaluated |
-| Gulf PM Eval | 12:10 and 21:10 IST | ~15 min (24h mode) | ~10 jobs |
-| Global Visa | 03:00 IST daily | ~70 min | ~$0.18 Claude |
+| Feed | Schedule | Runtime before | Runtime now | Per-run cost |
+|---|---|---|---|---|
+| PM Eval (India) | every 30 min, 08:05–23:35 IST | 4–5 min | **1.7 min** | ~3–17 jobs judged |
+| Gulf PM Eval | 12:10 and 21:10 IST | ~15 min | **1 min** | ~10 jobs |
+| Global Visa | 03:00 IST daily | 115 min | **22 min** | **$0.16** |
 
 ## Files
-- `core_eval_hosted.py` — shared engine: LinkedIn search/parse/pagination, Selenium
-  scrapers (Naukri, Hirist, IIMJobs), JD fetch dispatch, Claude call, `evaluate_batch`.
+- `core_eval_hosted.py` — shared engine: LinkedIn client (search, pagination, guest JD
+  endpoint), the rate limiter, `JobCollector`, Selenium scrapers for the three Indian
+  boards, `claude_structured`, `evaluate_job`, `evaluate_batch`.
 - `pm_eval_hosted.py` — India feed: 9 LinkedIn keyword searches + 3 Selenium sites,
   24h window, Apply/Maybe/Skip.
-- `gulf_eval_hosted.py` — GCC feed: 6 countries, deterministic Arabic-requirement
-  override, cross-country dedup.
+- `gulf_eval_hosted.py` — GCC feed: 6 countries, deterministic Arabic-requirement override.
 - `global_visa_hosted.py` — 10-country feed: visa-sponsorship filter, no fit judgment.
 - `sheets_writer.py` — gspread I/O, dedup reads, row formatting.
-- `playwright_browser.py` — shared Playwright session (LinkedIn JD fetch, India/Gulf feeds).
 - `ntfy_notify.py` — push notification.
+- `tests/` — 105 offline tests; `.github/workflows/tests.yml` runs them on every push.
+
+## The binding constraint: LinkedIn's rate limit
+Measured against the guest endpoints from a clean IP, 25–60 requests per data point:
+
+| Request rate | Rate-limited |
+|---|---|
+| 0.7 req/s (the old fixed-sleep pacing) | 0 / 25 |
+| 1.0 req/s | 0 / 38 |
+| 1.5 req/s | 27 / 60 |
+| 2.5 req/s | 46 / 60 |
+| ~9 req/s (4–8 concurrent, unpaced) | 25 / 40 and 19 / 40 |
+
+**The wall is ~1 request/second per IP, and it is a rate limit, not a concurrency
+limit.** Parallel workers reach the same wall faster; they don't lift it. This is why
+the codebase uses a token bucket rather than `asyncio`/`httpx`, and why an async
+rewrite would add risk for no throughput (`httpx` also can't do the TLS impersonation
+`curl_cffi` provides, so it would likely be blocked outright).
+
+`RateLimiter` in core paces every LinkedIn call in every feed, halves the rate on a
+429/999 and eases back up after 20 clean requests. Every run prints
+`requests / rate-limited / final rate`; the last three production runs reported
+**0 rate-limited** at a sustained 1.00 req/s.
 
 ## Pipeline detail
+**1. Search.** `curl_cffi` with `impersonate="chrome"` for the TLS fingerprint.
+`/jobs/search/` returns ~60 cards; `jobs-guest/.../seeMoreJobPostings/search?start=N`
+pages 10 at a time to a hard ceiling near 1,000 results, stopping when a page yields no
+unseen IDs. The US always hits that ceiling, so the global feed splits it by state.
+Naukri/Hirist/IIMJobs still use headless Selenium — no browserless equivalent has been
+verified for them, and that feed is ~100 seconds anyway.
 
-**1. Search.** LinkedIn's logged-out endpoints, via `curl_cffi` with
-`impersonate="chrome"` for the TLS fingerprint:
-- `www.linkedin.com/jobs/search/?keywords=…&location=…&f_TPR=r86400&sortBy=DD`
-  returns ~60 cards.
-- `jobs-guest/jobs/api/seeMoreJobPostings/search?…&start=N` pages 10 at a time, to a
-  hard ceiling near 1,000 results. Pagination stops when a page yields no unseen IDs.
-- 429 handling: 3 attempts, 45–95 s backoff. Measured rate: **1 block in 4,147
-  requests** with 5–9 s between searches, 1.5 s between pages.
-- Naukri / Hirist / IIMJobs use headless Selenium with `webdriver-manager`,
-  CSS-class selectors, scroll-to-load.
+**2. Filter and dedup — `JobCollector`.** One shared path: skip IDs seen this run,
+location filter, title filter, drop anything already in the Sheet by URL **or**
+`company|title|country` fingerprint, collapse a role posted in several cities (keeping
+one row with the locations joined), cap roles per company. Per-reason counters are
+printed so nothing vanishes silently.
 
-**2. Filter.** Title regexes (each feed has its own), 24h recency, location regexes
-(India and Gulf are mutually exclusive across feeds), per-company caps, then the URL
-dedup set.
+**3. Job descriptions.** `jobs-guest/jobs/api/jobPosting/{id}`, parsed with
+BeautifulSoup — no browser. 838/838 and 2,570/2,575 in the last two global runs.
+Playwright was removed entirely: it cost a 300MB chromium install per workflow run.
 
-**3. Job descriptions.** Two mechanisms, and this is the biggest inconsistency in the
-codebase:
-- India/Gulf: Playwright for LinkedIn (one shared browser), **a new Selenium Chrome
-  per job** for the other three sites.
-- Global Visa: `jobs-guest/jobs/api/jobPosting/{id}` parsed with BeautifulSoup — no
-  browser, ~1.8 s/job, **2,570 / 2,575 succeeded**. The India/Gulf feeds still don't
-  use this.
+**4. Claude.** `claude-haiku-4-5-20251001` via a forced tool call with an enum schema.
+Anything malformed — no `tool_use` block, missing field, value outside the enum —
+raises and becomes a retryable `Error`, never a decision. `Error` rows are excluded
+from the Sheet, so the job is retried next run; 3 consecutive failures abort the batch.
+The global feed sends only the visa-matching lines (±2 lines of context) rather than
+the whole JD: $0.75/run → $0.16.
 
-**4. Claude.** Raw `requests.post` to `/v1/messages`, `claude-haiku-4-5-20251001`, no
-SDK, no structured outputs. Responses are parsed by string-prefix matching on
-`Decision:` / `Reason:` / `Gap:` (or `VISA:` / `EVIDENCE:`).
-- India/Gulf: fit judgment against a profile in the prompt, ~20/35/45 target split for
-  Apply/Maybe/Skip. Whole JD sent (4,000-char cap).
-- Global Visa: a yes/no classifier, not a fit judgment. Only the visa-matching lines
-  ±2 lines of context go to the model (3,000-char cap), which took cost from $0.75 to
-  $0.18 a run at 7–23% of the JD text.
-- `decision == "Error"` is excluded from the sheet so the job is retried next run;
-  3 consecutive failures abort the batch.
+**5. Deterministic override.** The Gulf feed forces Skip when the JD makes Arabic
+mandatory, because Haiku wrote "Arabic fluency is required" as its reason and still
+answered Maybe. It fires only on positive evidence (a spoken/written skill, plus either
+"required/must" on the line or a requirements-type heading above it) — an earlier,
+looser version produced three false Skips on real jobs, all pinned as tests now.
 
-**5. Deterministic overrides.** The Gulf feed post-processes Haiku: if the JD makes
-Arabic mandatory (skill phrase, not NLP/RTL/localisation, and either "required/must" on
-the line or a requirements-type section heading above it), a non-Skip decision is forced
-to Skip. This exists because Haiku wrote "Arabic fluency is required" as its reason and
-still answered Maybe.
+**6. Write.** `append_rows`, a second dedup pass at write time, then one `batch_update`
+setting CLIP wrap and 21px row height so the multi-line JD cell doesn't inflate rows.
+Sheets calls use exponential backoff on 429/5xx.
 
-**6. Write.** `append_rows` per tab; a second dedup pass at write time; then one
-`batch_update` sets CLIP wrap and 21 px row height across all data rows so the
-multi-line JD cell doesn't inflate them. Sheets API calls are wrapped in exponential
-backoff for 429/5xx.
+## What changed in the optimisation pass (2026-09-17/18)
+1. **Schema-enforced Claude output** — fixes the silent `Skip` fallback that permanently
+   blackholed any job whose reply didn't parse.
+2. **Guest JD endpoint in all three feeds**, Playwright deleted.
+3. **Fingerprint dedup** (`company|title|country`) alongside URL, so re-posts under new
+   IDs aren't re-judged and re-paid for.
+4. **One adaptive rate limiter** replacing fixed per-call-site sleeps, which had been
+   spending roughly half the available request budget on dead time.
+5. **`JobCollector`** replacing two drifting copies of the filter/dedup loop.
+6. **105 offline tests + CI.**
+7. **404 handling** — an expired posting returns immediately instead of ~2 minutes of
+   backoff; LinkedIn's non-standard 999 status is handled explicitly.
 
-## Known weaknesses — the interesting ones for a reviewer
-1. **Everything is sequential I/O with fixed sleeps.** No concurrency anywhere. The
-   Global Visa run is ~70 min, overwhelmingly single-threaded HTTP waiting. The
-   measured 429 rate suggests the sleeps are far more conservative than needed.
-2. **JD fetch is inconsistent.** The India/Gulf feeds spawn a Chrome process per
-   non-LinkedIn job while a proven browserless endpoint exists for LinkedIn.
-   Naukri/Hirist/IIMJobs may have equivalents.
-3. **Unparseable Claude output silently becomes Skip** (`result` is initialised to
-   Skip), and Skip is written and permanently deduped. A malformed response therefore
-   blackholes a job forever — contrast the deliberate `Error` path, designed to avoid
-   exactly this.
-4. **Dedup is URL-only.** The same role re-posted under a new LinkedIn ID is
-   re-evaluated and re-paid for. Title+company dedup exists only within a run, in two
-   feeds, implemented twice.
-5. **Recency filtering is lenient by default.** Unparseable "posted" strings
-   ("Recent", "N/A") return `True` from the window check, so undated scrapes always pass.
-6. **Scraper fragility.** Selenium selectors are hardcoded CSS class fragments
-   (`srp-jobtuple`, `dang-inner-html`); LinkedIn card parsing is a bare
-   `except: continue`, so a markup change degrades to a silent zero rather than an error.
-7. **Search coverage is capped.** LinkedIn stops near 1,000 results per query; the US
-   needs a per-state split. Shorter `f_TPR` windows (r3600, r21600) appear not to be
-   honoured, so there's no reliable way to slice by time.
-8. **Sheet-as-database.** Dedup means reading one column of every tab on every run,
-   forever. Growth is unbounded; the Skip tab also stores up to 45,000 chars of JD per row.
-9. **Duplication across feeds.** Country lists, dedup keys, title filters and
-   Claude-call plumbing are copy-pasted between three modules, now diverging.
-10. **No tests in the repo.** Everything was verified ad hoc in a scratch directory and
-    thrown away.
-11. **Public repo.** The candidate profile is in the prompt in plain sight; secrets are
-    Actions secrets, so not exposed, but run logs are public.
-12. **Prompt/judgment quality.** ~60% of Gulf results land in Maybe against a 35%
-    target, so the judgment carries little signal at the margin.
+### Reviewer proposals deliberately NOT adopted
+- **SQLite as the state store.** GitHub runners are ephemeral and no persistence
+  mechanism was specified. Every option is worse than the Sheet today: committing a
+  binary DB churns the repo, Actions cache can be evicted (losing it means re-paying
+  Claude for everything), artifacts need extra plumbing. It was also justified by
+  "minute-long Sheet reads" — measured, the dedup read is **0.65 s** for an empty sheet
+  and sub-second for ~500 URLs. Revisit when a dedup read exceeds ~10 s.
+- **Sheets carrying only Apply/Maybe.** Skip rows are the dedup memory and deliberately
+  carry JD text for the separate job-automation project (commit `c743dae`). Dropping
+  them, combined with an ephemeral local DB, would mean re-judging rejected jobs forever.
+- **`asyncio` + `httpx` + `Semaphore(8)`.** See the rate-limit table: no throughput to
+  gain, and `httpx` loses the TLS impersonation.
+- **Trimming JDs to the Qualifications section for the fit feeds.** The fit judgment
+  needs the "About the role" context, and those feeds judge ~3–17 jobs per run, so the
+  saving is cents.
+- **Converting ~200 `print()` calls to `logging`.** In Actions the printed lines are the
+  log UX and timestamps are already added by the runner; the rewrite is churn with
+  regression risk and no functional gain.
+
+## Known weaknesses that remain
+1. **Search coverage is capped** at ~1,000 results per query. The US needs a per-state
+   split; some state/day combinations may still truncate. Shorter `f_TPR` windows
+   (r3600, r21600) are not honoured, so time isn't a usable shard axis.
+2. **Sheet-as-database grows unbounded.** Dedup now reads four columns per tab per run
+   instead of one. Fine at hundreds of rows; revisit at tens of thousands.
+3. **Scraper fragility.** Selenium selectors are hardcoded CSS class fragments; LinkedIn
+   card parsing swallows per-card errors, so a markup change degrades to a silent zero.
+4. **Recency filtering is lenient**: an unparseable "posted" string passes the window.
+5. **Fingerprint collisions.** Two genuinely distinct openings with the same title at the
+   same company in one country collapse to one row, and a role rejected once won't
+   resurface if re-posted.
+6. **Detection only finds employers who say it.** Many companies sponsor visas without
+   mentioning it, so the global feed's recall is bounded by JD wording, not by the code.
+7. **Public repo.** The candidate profile sits in the prompt in plain sight; secrets are
+   Actions secrets, but run logs are public.
+8. **Judgment quality.** ~60% of Gulf results land in Maybe against a 35% target, so the
+   fit judgment carries little signal at the margin.
 
 ## Questions worth a second opinion
-- Is a bounded thread pool (4–8 workers) for JD fetches safe against LinkedIn's rate
-  limits, and what's the right backoff design if so?
-- Should the deterministic Arabic-style override generalise into a rules layer that runs
-  before the model, to cut cost and remove a class of model error?
-- Is there a better dedup key than URL that survives re-posts without merging genuinely
-  distinct openings?
-- Is the Sheet the right store at this growth rate, or should state move to SQLite in the
-  repo, or Actions cache, with the Sheet as presentation only?
-- Given a 1,000-result ceiling per query, what's the best axis to shard searches on for
-  full coverage?
+- Given a hard ~1,000-result ceiling per query and no working time-slicing, what's the
+  best axis to shard searches on for full coverage?
+- Is there a dedup key better than `company|title|country` that survives re-posts without
+  merging genuinely distinct openings?
+- Would per-country IP diversity (proxies) be worth it, or is ~1 req/s adequate now that
+  a full global sweep is 22 minutes?
+- Is the Maybe-heavy distribution a prompt problem or a profile-definition problem?
