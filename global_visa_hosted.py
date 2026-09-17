@@ -44,7 +44,7 @@ import requests
 
 from core_eval_hosted import (
     _li_get_with_retry, _parse_li_cards, _LI_TPR, _load_api_key, claude_structured,
-    fetch_jd_guest, job_fingerprint, li_search_gap, LI_PAGE_SLEEP, LI_JD_SLEEP,
+    fetch_jd_guest, job_fingerprint, LI_LIMITER,
 )
 from gulf_eval_hosted import is_gulf_location
 from sheets_writer import save_visa_jobs, load_seen_keys, TAB_LISTINGS
@@ -125,7 +125,6 @@ def search(location: str, keyword="Product Manager", time_range="24h"):
     hits, ids = _parse_li_cards(r.text)
     pages = 1
     while pages < 101:
-        time.sleep(LI_PAGE_SLEEP)
         r = _li_get_with_retry("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
                                f"?{q}&start={len(ids)}")
         if r is None:
@@ -173,7 +172,6 @@ def collect_jobs(seen: set, seen_keys: set) -> list:
             kept += 1
         print(f"  {label:<34} scanned {scanned:>4} / {pages:>3} pages → +{kept}"
               + ("   ⚠️ near LinkedIn's 1000 cap" if scanned >= CAP_NEAR else ""), flush=True)
-        time.sleep(li_search_gap())
         return scanned
 
     for country in COUNTRIES:
@@ -314,7 +312,6 @@ def main():
                   f"the rest will be picked up next run.", flush=True)
             break
         jd = fetch_jd_guest(job["job_id"])
-        time.sleep(LI_JD_SLEEP)
         if len(jd) < 100:
             jd_fail += 1
             continue

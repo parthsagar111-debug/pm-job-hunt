@@ -199,26 +199,36 @@ _LI_TPR = {
 }
 
 def _li_get_with_retry(url: str):
-    """GET a LinkedIn search URL, retrying on 429/errors. Returns the response, or None."""
-    import random
+    """GET any LinkedIn URL through the shared rate limiter, retrying on 429/errors.
+    Returns the response, or None. Every LinkedIn call in every feed goes through
+    here, which is what makes one global request budget possible."""
     import urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     for attempt in range(3):
         try:
+            LI_LIMITER.acquire()
             r = _LI_GET(url, headers=HEADERS, timeout=15)
-            if r.status_code == 429:
-                wait = 45 + random.uniform(0, 20) + (attempt * 30)
-                print(f"  [LinkedIn] 429 rate-limited — waiting {wait:.0f}s (attempt {attempt+1}/3)...")
+            # 999 is LinkedIn's own "go away" status, not a standard HTTP code.
+            if r.status_code in (429, 999):
+                LI_LIMITER.penalize()
+                wait = 30 + random.uniform(0, 15) + (attempt * 20)
+                print(f"  [LinkedIn] {r.status_code} rate-limited — waiting {wait:.0f}s "
+                      f"(attempt {attempt+1}/3)...")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
+            LI_LIMITER.reward()
             return r
         except Exception as e:
+            # 404 = the posting is gone (expired/pulled). Retrying can't fix that,
+            # and the old code spent ~2 minutes of backoff per dead listing.
+            if "404" in str(e):
+                return None
             if attempt == 2:
                 print(f"  [LinkedIn] ERROR: {e}"); return None
-            wait = 45 + random.uniform(0, 20)
+            wait = 10 + random.uniform(0, 10)
             print(f"  [LinkedIn] error, retrying in {wait:.0f}s...")
             time.sleep(wait)
-    print(f"  [LinkedIn] ERROR: gave up after 3 attempts (429)")
+    print(f"  [LinkedIn] ERROR: gave up after 3 attempts (rate limited)")
     return None
 
 def _parse_li_cards(html: str) -> tuple[list, set]:
@@ -249,18 +259,73 @@ def _parse_li_cards(html: str) -> tuple[list, set]:
 
 LI_MAX_EXTRA_PAGES = 25   # paginate=True only — LinkedIn serves 10 results per extra page
 
-# ── Pacing. Measured 2026-09-17 across a full global sweep: 2 rate-limit blocks in
-# ~4,100 requests at 1.5s/page + 5-9s between searches, and >60% of that run's 115
-# minutes was these sleeps. Halved on that evidence; _li_get_with_retry still backs
-# off 45-95s on a 429, so the downside of being slightly too fast is a pause, not a
-# failed run. Tune here, not at the call sites.
-LI_PAGE_SLEEP  = 0.6          # between pagination pages
-LI_SEARCH_GAP  = (2.5, 4.0)   # between one search/keyword and the next
-LI_JD_SLEEP    = 0.3          # between guest-endpoint JD fetches
+# ─────────────────────────────────────────────
+# RATE LIMITING
+# ─────────────────────────────────────────────
+# Measured against LinkedIn's guest endpoints on 2026-09-17/18, clean IP,
+# 25-60 requests per data point:
+#     0.7 req/s  →   0/25 rate-limited      (what production was doing)
+#     1.0 req/s  →   0/38 rate-limited
+#     1.5 req/s  →  27/60 rate-limited
+#     2.5 req/s  →  46/60 rate-limited
+#     ~9 req/s (4-8 concurrent, unpaced) → 25/40 and 19/40
+# So the ceiling is roughly ONE REQUEST PER SECOND PER IP, and it is a rate
+# limit, not a concurrency limit — parallel workers buy nothing, they just hit
+# the same wall faster. Hence a token bucket instead of an async rewrite.
+#
+# The old code paid fixed sleeps at each call site (1.5s/page, 1s/JD, 5-9s
+# between searches) AFTER each request returned, so a ~0.4s request became a
+# ~1.9s cycle: an effective 0.36-0.55 req/s, roughly half the available budget.
+# One global bucket across every LinkedIn call spends that budget evenly.
+LI_TARGET_RATE = 1.0    # requests/second, the measured ceiling
+LI_MIN_RATE    = 0.25   # floor when LinkedIn pushes back
+LI_JITTER      = 0.15   # ± fraction, so the pattern isn't a metronome
 
-def li_search_gap() -> float:
-    """Randomised so the request pattern isn't a metronome."""
-    return random.uniform(*LI_SEARCH_GAP)
+class RateLimiter:
+    """Token bucket with adaptive backoff, shared by every LinkedIn request.
+
+    On a 429 the rate halves (down to LI_MIN_RATE); after 20 clean requests it
+    creeps back up by 25% toward the target. That way a hot runner IP degrades
+    gracefully instead of burning the run on repeated 45s backoffs, and a cool
+    one gets the full budget.
+    """
+
+    def __init__(self, rate: float = LI_TARGET_RATE):
+        self.target   = rate
+        self.rate     = rate
+        self._next    = 0.0
+        self.requests = 0
+        self.blocks   = 0
+        self._clean   = 0
+
+    def acquire(self):
+        now  = time.time()
+        wait = self._next - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.time()
+        interval   = (1.0 / self.rate) * random.uniform(1 - LI_JITTER, 1 + LI_JITTER)
+        self._next = now + interval
+        self.requests += 1
+
+    def penalize(self):
+        self.blocks += 1
+        self._clean  = 0
+        self.rate    = max(LI_MIN_RATE, self.rate / 2)
+        print(f"  [rate] backing off to {self.rate:.2f} req/s after a 429")
+
+    def reward(self):
+        self._clean += 1
+        if self._clean >= 20 and self.rate < self.target:
+            self.rate   = min(self.target, self.rate * 1.25)
+            self._clean = 0
+            print(f"  [rate] easing back up to {self.rate:.2f} req/s")
+
+    def summary(self) -> str:
+        return (f"{self.requests} LinkedIn request(s), {self.blocks} rate-limited, "
+                f"final rate {self.rate:.2f} req/s")
+
+LI_LIMITER = RateLimiter()
 
 def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h", location=SEARCH_LOCATION,
                    paginate=False, limit=TOP_N):
@@ -284,7 +349,6 @@ def fetch_linkedin(keyword=SEARCH_KEYWORD, time_range="24h", location=SEARCH_LOC
 
     if paginate:
         for _ in range(LI_MAX_EXTRA_PAGES):
-            time.sleep(LI_PAGE_SLEEP)
             r = _li_get_with_retry(
                 "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
                 f"?{query}&start={len(all_ids)}")
@@ -556,10 +620,6 @@ def fetch_linkedin_multi(keyword=SEARCH_KEYWORD, time_range="24h") -> list:
             print(f"{new} new")
         except Exception as e:
             print(f"error: {e}")
-        # Randomised delay — reduces 429 rate-limit errors vs. a fixed interval
-        delay = li_search_gap()
-        print(f"    ⏳ waiting {delay:.1f}s before next keyword...")
-        time.sleep(delay)
     return all_hits
 
 SOURCES = [

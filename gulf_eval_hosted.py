@@ -29,7 +29,7 @@ import random
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core_eval_hosted import fetch_linkedin, evaluate_batch, job_fingerprint, li_search_gap
+from core_eval_hosted import fetch_linkedin, evaluate_batch, job_fingerprint, LI_LIMITER
 from sheets_writer import save_eval_jobs, load_seen_keys
 from ntfy_notify import run_summary
 from playwright_browser import close_browser
@@ -243,7 +243,6 @@ def fetch_gulf_jobs(time_range: str, seen: set, seen_keys: set = None) -> list:
             if off_region: extras.append(f"{off_region} outside the Gulf dropped")
             if dupes:      extras.append(f"{dupes} same title+company as another country dropped")
             print(f"    → {new} new" + (f"  ({'; '.join(extras)})" if extras else ""))
-            time.sleep(li_search_gap())   # spacing reduces LinkedIn 429s
     return all_jobs
 
 # ─────────────────────────────────────────────
