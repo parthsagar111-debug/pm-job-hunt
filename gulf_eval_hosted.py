@@ -75,6 +75,67 @@ def is_gulf_location(location: str) -> bool:
 MAX_PER_COMPANY = 3   # per run — stops one big hirer flooding a week-long backfill
 
 # ─────────────────────────────────────────────
+# MANDATORY-ARABIC CHECK
+# ─────────────────────────────────────────────
+# Haiku doesn't reliably Skip on Arabic even when told to — in the first week
+# run it wrote "Arabic fluency is required" as the reason and still said Maybe.
+# Real JDs rarely say "required" either: they just list "Fluency in English and
+# Arabic" under the requirements. So this checks the JD text directly and
+# overrides a non-Skip decision when Arabic appears as a language skill that
+# isn't marked optional, either on its own line or by the section it sits in.
+_ARABIC_SKILL = re.compile(
+    r"\barabic\b.*\b(fluen\w*|speak\w*|spoken|written|native|proficien\w*|communication|language|bilingual)\b"
+    r"|\b(fluen\w*|speak\w*|spoken|written|native|proficien\w*|communication|language|bilingual)\b.*\barabic\b",
+    re.I,
+)
+_OPTIONAL = re.compile(
+    r"\b(prefer\w*|plus|advantage\w*|desirable|nice[- ]to[- ]have|bonus|asset|beneficial|ideal\w*|optional"
+    r"|not (required|mandatory|necessary))\b",
+    re.I,
+)
+# Headings: "The Ideal Candidate:" is a requirements section, so no "ideal" here.
+_OPTIONAL_HEADING = re.compile(
+    r"\b(prefer\w*|plus|advantage\w*|desirable|nice[- ]to[- ]have|bonus|optional)\b", re.I)
+_REQUIRED_HEADING = re.compile(
+    r"\b(requir\w*|qualif\w*|need|must|profile|looking for|skills|experience|about you|who you are)\b", re.I)
+
+def mandatory_arabic_line(jd: str) -> str:
+    """Returns the JD line making Arabic mandatory, or "" if there isn't one."""
+    lines = [l.strip() for l in (jd or "").split("\n")]
+    for i, line in enumerate(lines):
+        if not _ARABIC_SKILL.search(line) or _OPTIONAL.search(line):
+            continue
+        # Walk back to the section heading: under "Preferred:"/"Bonus:" it's optional.
+        optional_section = False
+        for prev in reversed(lines[max(0, i - 25):i]):
+            if len(prev) > 60:
+                continue   # bullet text, not a heading
+            if _OPTIONAL_HEADING.search(prev):
+                optional_section = True
+                break
+            if _REQUIRED_HEADING.search(prev):
+                break
+        if not optional_section:
+            return line
+    return ""
+
+def apply_arabic_override(jobs: list) -> int:
+    overridden = 0
+    for job in jobs:
+        ev = job.get("evaluation", {})
+        if ev.get("decision") == "Skip":
+            continue
+        line = mandatory_arabic_line(ev.get("jd", ""))
+        if not line:
+            continue
+        print(f"  ↳ {ev['decision']} → Skip (Arabic required): {job.get('title', '')} @ {job.get('company', '')}")
+        ev["decision"] = "Skip"
+        ev["reason"]   = f'Arabic required — JD: "{line[:90]}"'
+        ev["gap"]      = "Arabic fluency"
+        overridden += 1
+    return overridden
+
+# ─────────────────────────────────────────────
 # CLAUDE PROMPT
 # ─────────────────────────────────────────────
 GULF_EVAL_PROMPT = """You are a recruiter evaluating Gulf (GCC) job listings for a candidate based in India.
@@ -105,7 +166,9 @@ or lists Arabic as "preferred" / "a plus" rather than required.
 Hard Skip ONLY if:
 1. Restricted to local nationals — e.g. "UAE Nationals only", "Emiratisation", "Saudi nationals only",
    "Saudization", "Qatari nationals", "Kuwaiti nationals", "Omani nationals", "Bahraini nationals"
-2. Arabic fluency is explicitly required / mandatory (not just preferred)
+2. Arabic is required — this includes Arabic simply listed among the requirements
+   (e.g. "Fluency in English and Arabic", "Excellent communication in English & Arabic"),
+   not only when the word "required" is used. Only "preferred" / "a plus" / "bonus" is not a Skip.
 3. Explicitly requires B.Tech/CS degree (not just "preferred")
 4. Role title itself is explicitly junior — "Associate Product Manager" or "APM" in the title
 5. Domain is purely supply chain, warehouse ops, or clinical healthcare with no consumer product angle
@@ -120,34 +183,56 @@ Gap: [biggest gap or None]"""
 # ─────────────────────────────────────────────
 # FETCH
 # ─────────────────────────────────────────────
+def _title_company_key(job: dict) -> str:
+    norm = lambda s: " ".join(re.sub(r"[^\w]+", " ", (s or "").lower()).split())
+    return norm(job.get("title")) + "|" + norm(job.get("company"))
+
 def fetch_gulf_jobs(time_range: str, seen: set) -> list:
     all_jobs       = []
     seen_ids       = set()
     company_counts = {}
+    # Regional roles get posted once per country under different LinkedIn ids
+    # (e.g. Stryker "Product Manager, Medical Devices - META" in both Dubai and
+    # Riyadh). Keep the first copy and note the other locations on it. Keys are
+    # registered even for already-in-Sheet copies, so a re-post in another
+    # country isn't treated as new.
+    by_title_company = {}   # key -> the kept job dict, or None if it's already in the Sheet
 
     for country, keywords in GULF_SEARCHES:
         print(f"\n🌴 [{country}]")
         for kw in keywords:
             print(f"    [{kw}]", end=" ", flush=True)
             jobs = fetch_linkedin(kw, time_range, location=country, paginate=True, limit=1000)
-            new = off_region = 0
+            new = off_region = dupes = 0
             for job in jobs:
                 if job["job_id"] in seen_ids:
                     continue
                 seen_ids.add(job["job_id"])
-                if job["url"].split("?")[0] in seen:
-                    continue
                 if not is_gulf_location(job["location"]):
                     off_region += 1
+                    continue
+                key = _title_company_key(job)
+                if key in by_title_company:
+                    kept = by_title_company[key]
+                    if kept is not None and job["location"] not in kept["location"]:
+                        kept["location"] += " / " + job["location"]
+                    dupes += 1
+                    continue
+                if job["url"].split("?")[0] in seen:
+                    by_title_company[key] = None
                     continue
                 co = job.get("company", "").lower().strip()
                 if company_counts.get(co, 0) >= MAX_PER_COMPANY:
                     continue
                 company_counts[co] = company_counts.get(co, 0) + 1
                 job["source"] = "LinkedIn Gulf"
+                by_title_company[key] = job
                 all_jobs.append(job)
                 new += 1
-            print(f"    → {new} new" + (f"  ({off_region} outside the Gulf dropped)" if off_region else ""))
+            extras = []
+            if off_region: extras.append(f"{off_region} outside the Gulf dropped")
+            if dupes:      extras.append(f"{dupes} same title+company as another country dropped")
+            print(f"    → {new} new" + (f"  ({'; '.join(extras)})" if extras else ""))
             time.sleep(random.uniform(8, 14))   # spacing reduces LinkedIn 429s
     return all_jobs
 
@@ -201,6 +286,10 @@ def main():
         print("\n  No jobs were successfully evaluated this run (API failures only).")
         run_summary("Gulf PM Eval — FAILED", 0, 0, 0)
         sys.exit(1)
+
+    n_arabic = apply_arabic_override(evaluated_jobs)
+    if n_arabic:
+        print(f"  {n_arabic} job(s) moved to Skip — Arabic listed as a requirement in the JD")
 
     n_apply, n_maybe, n_skip = save_eval_jobs(SPREADSHEET_ID, evaluated_jobs)
 
