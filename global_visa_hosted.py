@@ -58,32 +58,24 @@ T0             = time.time()
 # ─────────────────────────────────────────────
 # COUNTRIES — LinkedIn location names. India + GCC excluded (other feeds cover them).
 # ─────────────────────────────────────────────
+# Cut from 128 countries to these 10 on 2026-09-17, Parth's call, on the evidence
+# of two full worldwide sweeps (the probe and the first live run): EVERY sponsoring
+# role found came from the US, UK, Germany, Spain, Canada or Cyprus, and 82 of the
+# 128 countries returned no product roles at all. The zero-yield countries kept
+# here (Netherlands, Ireland, Singapore, Australia) do sponsor Indians readily —
+# their listings just don't say so yet, and they're cheap to keep. Dropping the
+# rest took a run from ~115 min to ~70 without losing a single hit.
 COUNTRIES = [
-    # North America
-    "United States", "Canada", "Mexico", "Puerto Rico",
-    # Europe
-    "United Kingdom", "Ireland", "Germany", "Netherlands", "France", "Spain", "Portugal", "Italy",
-    "Switzerland", "Austria", "Belgium", "Luxembourg", "Denmark", "Sweden", "Norway", "Finland",
-    "Iceland", "Poland", "Czechia", "Slovakia", "Hungary", "Romania", "Bulgaria", "Greece",
-    "Cyprus", "Malta", "Estonia", "Latvia", "Lithuania", "Slovenia", "Croatia", "Serbia",
-    "Bosnia and Herzegovina", "Montenegro", "North Macedonia", "Albania", "Kosovo", "Moldova",
-    "Ukraine", "Belarus", "Russia", "Georgia", "Armenia", "Azerbaijan", "Türkiye", "Monaco",
-    "Liechtenstein", "Andorra", "Gibraltar",
-    # Asia-Pacific
-    "Singapore", "Malaysia", "Indonesia", "Thailand", "Vietnam", "Philippines", "Hong Kong",
-    "Taiwan", "Japan", "South Korea", "China", "Macao", "Australia", "New Zealand", "Pakistan",
-    "Bangladesh", "Sri Lanka", "Nepal", "Maldives", "Cambodia", "Myanmar", "Mongolia",
-    "Kazakhstan", "Uzbekistan", "Kyrgyzstan", "Brunei", "Laos", "Fiji", "Papua New Guinea",
-    # Middle East (non-GCC) & Africa
-    "Israel", "Jordan", "Lebanon", "Egypt", "Iraq", "Morocco", "Tunisia", "Algeria", "Nigeria",
-    "Ghana", "Kenya", "Uganda", "Tanzania", "Rwanda", "Ethiopia", "South Africa", "Mauritius",
-    "Senegal", "Côte d'Ivoire", "Cameroon", "Zambia", "Zimbabwe", "Botswana", "Namibia",
-    "Angola", "Mozambique",
-    # Latin America & Caribbean
-    "Brazil", "Argentina", "Chile", "Colombia", "Peru", "Uruguay", "Paraguay", "Bolivia",
-    "Ecuador", "Venezuela", "Costa Rica", "Panama", "Guatemala", "El Salvador", "Honduras",
-    "Nicaragua", "Dominican Republic", "Jamaica", "Trinidad and Tobago", "Bahamas", "Barbados",
-    "Cayman Islands", "Bermuda",
+    "United States",    # 909 roles/day, 5 hits — split by state below, it always hits the cap
+    "United Kingdom",   # 129 roles/day, 2 hits
+    "Germany",          #  72 roles/day, 1-2 hits
+    "Canada",           #  61 roles/day, 1 hit in the probe
+    "Spain",            #  43 roles/day, 1 hit in the probe
+    "Netherlands",      #  38 roles/day, 0 hits so far
+    "Singapore",        #  38 roles/day, 0 hits so far
+    "Australia",        #  18 roles/day, 0 hits so far
+    "Ireland",          #  29 roles/day, 0 hits so far
+    "Cyprus",           # tiny market, but 1 hit in both runs
 ]
 
 US_STATES = [

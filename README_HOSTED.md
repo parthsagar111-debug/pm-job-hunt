@@ -16,13 +16,14 @@ sponsor the work visa as standard, so it doesn't check each job for visa
 support — instead it skips roles restricted to local nationals
 (Emiratisation/Saudization) or requiring Arabic.
 
-**Global Visa PM** gives no Apply/Maybe/Skip judgment. It searches ~128 countries
-(US split by state when LinkedIn's ~1000-result cap bites), reads each JD from
+**Global Visa PM** gives no Apply/Maybe/Skip judgment. It searches 10 countries —
+US (split by state, since it always hits LinkedIn's ~1000-result cap), UK, Germany,
+Canada, Spain, Netherlands, Singapore, Australia, Ireland, Cyprus — reads each JD from
 LinkedIn's guest endpoint, and keeps a job only when Claude Haiku confirms the
 employer offers visa sponsorship — `YES`, or `CONDITIONAL` for "may be available".
 Relocation support alone doesn't qualify. Only the visa-related lines of the JD
 are sent to Claude, which keeps a full run at roughly $0.08. A 24h sweep takes
-~2h15m and yields ~10–15 sponsoring roles a day.
+~70 min and yields ~8–12 sponsoring roles a day.
 
 ---
 
