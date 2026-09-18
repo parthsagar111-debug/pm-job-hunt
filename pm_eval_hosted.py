@@ -26,7 +26,7 @@ from core_eval_hosted import (
     SOURCES, SOURCE_ICONS,
     sort_newest_first,
     within_24hrs, evaluate_batch,
-    SEARCH_KEYWORD, job_fingerprint, LI_LIMITER,
+    SEARCH_KEYWORD, JobCollector, LI_LIMITER,
 )
 from sheets_writer import save_eval_jobs, load_seen_keys
 from ntfy_notify import run_summary
@@ -60,8 +60,10 @@ def main() -> None:
         print("  Aborting run rather than risk re-evaluating everything at full API cost.")
         sys.exit(1)
 
-    all_jobs       = []
-    company_counts = {}
+    # Same collector the Gulf and global feeds use, so the per-reason counters show
+    # exactly why jobs dropped out — otherwise a quiet run is indistinguishable from
+    # an over-aggressive filter.
+    collector = JobCollector(seen_urls=seen, seen_keys=seen_keys, max_per_company=2)
 
     for name, fetch_fn in SOURCES:
         icon = SOURCE_ICONS.get(name, "🔔")
@@ -70,29 +72,17 @@ def main() -> None:
             jobs = fetch_fn(SEARCH_KEYWORD, time_range="24h")
             if name != "LinkedIn":
                 jobs = [j for j in jobs if within_24hrs(j)]
-            jobs = sort_newest_first(jobs)
-            filtered = []
-            for job in jobs:
-                if job.get("url", "").split("?")[0] in seen:
-                    continue
-                # Same role re-posted under a new id — already judged, don't pay again.
-                fp = job_fingerprint(job.get("company", ""), job.get("title", ""),
-                                     job.get("location", ""))
-                if fp in seen_keys:
-                    continue
-                seen_keys.add(fp)
-                co = job.get("company", "").lower().strip()
-                if company_counts.get(co, 0) >= 2:
-                    continue
-                company_counts[co] = company_counts.get(co, 0) + 1
-                filtered.append(job)
-            print(f"  {len(filtered)} new job(s)")
-            all_jobs.extend(filtered)
+            before = collector.counts["kept"]
+            for job in sort_newest_first(jobs):
+                collector.add(job, label=name)
+            print(f"  {collector.counts['kept'] - before} new job(s)")
         except Exception as e:
             print(f"  ERROR: {e}")
         time.sleep(2)
 
+    all_jobs = collector.jobs
     print(f"\n{'='*55}")
+    print(f"  Collected: {collector.summary()}")
     print(f"  Total: {len(all_jobs)} jobs  |  Evaluating with Claude AI...")
     print(f"{'='*55}\n")
 
