@@ -11,8 +11,7 @@ other feeds. The US is split by state when a country search hits LinkedIn's
 
 Runs ONCE and exits. Triggered via workflow_dispatch (cron-job.org or manually).
 
-Source:   LinkedIn (per-country search + guest JD endpoint, no browser), plus
-          Adzuna when ADZUNA_APP_ID/ADZUNA_APP_KEY are set
+Source:   LinkedIn (per-country search + guest JD endpoint, no browser)
 Output:   Google Sheet — "Listings" (YES / CONDITIONAL) and "No Sponsorship"
           (the rejected ones, with the quoted evidence)
 Notify:   ntfy push notification after run
@@ -23,8 +22,6 @@ Required environment variables (set as GitHub Actions secrets):
   GLOBAL_VISA_SPREADSHEET_ID    — Google Sheet ID for this script's output
   NTFY_TOPIC                    — your ntfy topic name
 Optional:
-  ADZUNA_APP_ID / ADZUNA_APP_KEY — free key from developer.adzuna.com; without
-                                   them the Adzuna source is skipped entirely
   TIME_RANGE                    — "24h" (default) or "week"
 
 Sizing, from the 2026-09-17 probe of one 24h window (see git history, branch
@@ -52,7 +49,6 @@ from core_eval_hosted import (
 )
 from gulf_eval_hosted import is_gulf_location
 from sponsor_registry import SponsorRegistry
-import adzuna_source
 from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS, TAB_NO_SPONSOR
 from ntfy_notify import push
 
@@ -178,20 +174,11 @@ def collect_jobs(seen: set[str]) -> list[dict]:
             for st in US_STATES:
                 run(f"US / {st}", f"{st}, United States")
 
-    # Adzuna: a second source over the same countries, skipped entirely when the
-    # credentials aren't set. Same collector, so the filters and dedup apply equally
-    # and anything LinkedIn already returned is dropped as a duplicate.
-    if adzuna_source.is_configured():
-        print("\n  [adzuna] fetching...", flush=True)
-        for country in COUNTRIES:
-            before = collector.counts["kept"]
-            for job in adzuna_source.fetch(country):
-                collector.add(job, label=f"Adzuna / {country}")
-            kept = collector.counts["kept"] - before
-            print(f"  Adzuna {country:<24} → +{kept}", flush=True)
-    else:
-        print("\n  [adzuna] ADZUNA_APP_ID/ADZUNA_APP_KEY not set — LinkedIn only", flush=True)
-
+    # Adzuna was trialled here 2026-09-18 and removed the same day, Parth's call.
+    # It added ~530 jobs a run for 16 seconds of API time, but produced zero
+    # confirmed sponsors: its API returns a ~200-char description, so it can't show
+    # what this feed looks for. Its only real contribution was feeding the UK/NL
+    # licence lookup, which wasn't worth a second source and two more secrets.
     print(f"\n  Collected: {collector.summary()}")
     return collector.jobs
 
@@ -324,9 +311,7 @@ def main() -> None:
             print(f"  ⏱ runtime limit reached at {i}/{len(jobs)} — saving what's done; "
                   f"the rest will be picked up next run.", flush=True)
             break
-        # Adzuna hands us a truncated description with the listing; LinkedIn needs a fetch.
-        jd = job.get("jd_text") or (fetch_jd_guest(job["job_id"])
-                                    if job["job_id"].startswith("li_") else "")
+        jd = fetch_jd_guest(job["job_id"])
         if len(jd) < 100:
             jd_fail += 1
             continue

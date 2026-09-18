@@ -5,7 +5,7 @@
 |---|---|---|---|
 | **PM Eval — India Jobs** | `pm_eval_hosted.py` | India PM jobs — LinkedIn + Naukri + Hirist + IIMJobs, last 24h | `PM_EVAL_SPREADSHEET_ID` |
 | **Gulf PM Eval** | `gulf_eval_hosted.py` | PM jobs in UAE, Saudi Arabia, Qatar, Bahrain, Oman, Kuwait — LinkedIn, last 24h or last week | `GULF_SPREADSHEET_ID` |
-| **Global Visa PM** | `global_visa_hosted.py` | PM jobs in 12 countries whose JD offers visa sponsorship, plus UK/NL licensed-sponsor flags — LinkedIn + Adzuna, last 24h | `GLOBAL_VISA_SPREADSHEET_ID`, optional `ADZUNA_APP_ID`/`ADZUNA_APP_KEY` |
+| **Global Visa PM** | `global_visa_hosted.py` | PM jobs in 12 countries whose JD offers visa sponsorship, plus UK/NL licensed-sponsor flags — LinkedIn, last 24h | `GLOBAL_VISA_SPREADSHEET_ID` |
 
 All three are triggered externally by cron-job.org calling GitHub's `workflow_dispatch`
 API (not GitHub's own built-in cron). PM Eval currently runs every 30 minutes.
@@ -31,9 +31,7 @@ licence means the employer *can* sponsor, not that they will, so it never promot
 job into Listings. UK/NL jobs whose JD never mentions visas appear as `NOT STATED`
 with the licence recorded.
 
-**Adzuna** (optional) adds ~500 jobs a run across 10 of the 12 countries; set
-`ADZUNA_APP_ID` and `ADZUNA_APP_KEY` (free at developer.adzuna.com) or it's skipped.
-A 24h sweep takes ~40-60 min.
+A 24h sweep takes ~40 min: ~1,700 LinkedIn requests at the ~1 req/s ceiling.
 
 ---
 
@@ -68,7 +66,6 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `PM_EVAL_SPREADSHEET_ID`      | Sheet ID for "PM Job Eval"                  |
 | `GULF_SPREADSHEET_ID`         | Sheet ID for "Gulf PM Eval"                 |
 | `GLOBAL_VISA_SPREADSHEET_ID`  | Sheet ID for "Global Visa PM"               |
-| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | Optional — free key from developer.adzuna.com |
 | `NTFY_TOPIC`                  | Your ntfy topic name (e.g. `parth-pm-jobs`) |
 
 ---
@@ -113,7 +110,7 @@ Each row: Month, Date Found, Title, Company, Location, Source, Decision, Reason,
 pip install -r requirements_hosted.txt -r requirements_dev.txt
 python -m pytest tests -q
 ```
-141 offline tests (no network, no API key) cover the title/location filters, dedup,
+137 offline tests (no network, no API key) cover the title/location filters, dedup,
 the Claude schema guard, the mandatory-Arabic override, the visa excerpt, LinkedIn
 parsing/pagination, the sponsor-register matcher and the Sheets helpers. CI runs them on
 every push to master. See TECHNICAL_BRIEF.md for the architecture and the

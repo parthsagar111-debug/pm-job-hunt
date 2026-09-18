@@ -26,7 +26,7 @@ Repo: `github.com/parthsagar111-debug/pm-job-hunt` (public, Python 3.11, single
 |---|---|---|---|---|
 | PM Eval (India) | every 30 min, 08:05–23:35 IST | 4–5 min | **1.7 min** | ~3–17 jobs judged |
 | Gulf PM Eval | 12:10 and 21:10 IST | ~15 min | **1 min** | ~10 jobs |
-| Global Visa | 03:00 IST daily | 115 min | **41 min** (12 countries + Adzuna) | **$0.03-0.29** |
+| Global Visa | 03:00 IST daily | 115 min | **~40 min** (12 countries) | **$0.03-0.29** |
 
 ## Files
 - `core_eval_hosted.py` — shared engine: LinkedIn client (search, pagination, guest JD
@@ -37,7 +37,6 @@ Repo: `github.com/parthsagar111-debug/pm-job-hunt` (public, Python 3.11, single
 - `gulf_eval_hosted.py` — GCC feed: 6 countries, deterministic Arabic-requirement override.
 - `global_visa_hosted.py` — 12-country feed: visa-sponsorship filter, no fit judgment.
 - `sponsor_registry.py` — UK/NL government sponsor registers, the company-level signal.
-- `adzuna_source.py` — second job source; dormant without ADZUNA_APP_ID/KEY.
 - `sheets_writer.py` — gspread I/O, dedup reads, row formatting.
 - `ntfy_notify.py` — push notification.
 - `tests/` — 105 offline tests; `.github/workflows/tests.yml` runs them on every push.
@@ -169,13 +168,19 @@ names, so "Deliveroo" resolves only via "ROOFOODS LTD T/A DELIVEROO", and a comp
 called "Starling" matches two entries and is therefore left unmatched. Measured:
 **50 jobs at licensed sponsors in one run, 49 with JDs that never mention visas.**
 
-**Adzuna** — one JSON API over 10 of the 12 countries (Ireland isn't hosted; Sweden
-and Cyprus have no site). **+531 jobs in one run** on top of LinkedIn. Use
-`title_only`, not `what`: free-text search dragged in 1,297 non-PM titles. Its
-descriptions are truncated (~200 chars), so it contributes discovery and the licence
-column rather than JD-based proof. Adzuna reports region-level locations
-("London, UK"), which silently bypassed the register lookup until the country was
-attached at the source — see `location_country`'s alias map.
+**Adzuna — trialled and removed the same day.** One JSON API over 10 of the 12
+countries, +531 jobs a run for 16 seconds of API time. Removed because it produced
+zero confirmed sponsors: the API returns a ~200-char description, so it cannot show
+what this feed looks for, and its only contribution was feeding the UK/NL licence
+lookup. Worth knowing if it's ever reconsidered: use `title_only` (free-text search
+dragged in 1,297 non-PM titles), and its region-level locations ("London, UK") bypass
+the register lookup unless the country is attached — which is why `location_country`
+keeps an alias map.
+
+**Runtime is LinkedIn, not the sources.** Measured on a 41-minute run: 20 min of
+search pagination, 0.4 min of Adzuna, 20 min of JD fetches — ~1,700 requests against
+the ~1 req/s ceiling. Adding sources that carry their own descriptions costs nothing;
+adding LinkedIn searches costs a minute per ~60 requests.
 
 ## Questions worth a second opinion
 - Given a hard ~1,000-result ceiling per query and no working time-slicing, what's the
