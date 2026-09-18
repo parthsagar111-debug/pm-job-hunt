@@ -71,9 +71,9 @@ Naukri/Hirist/IIMJobs still use headless Selenium — no browserless equivalent 
 verified for them, and that feed is ~100 seconds anyway.
 
 **2. Filter and dedup — `JobCollector`.** One shared path: skip IDs seen this run,
-location filter, title filter, drop anything already in the Sheet by URL **or**
-`company|title|country` fingerprint, collapse a role posted in several cities (keeping
-one row with the locations joined), cap roles per company. Per-reason counters are
+location filter, title filter, drop anything already in the Sheet by URL, collapse a
+role posted in several cities within the same run (keeping one row with the locations
+joined), cap roles per company. Per-reason counters are
 printed so nothing vanishes silently.
 
 **3. Job descriptions.** `jobs-guest/jobs/api/jobPosting/{id}`, parsed with
@@ -101,8 +101,14 @@ Sheets calls use exponential backoff on 429/5xx.
 1. **Schema-enforced Claude output** — fixes the silent `Skip` fallback that permanently
    blackholed any job whose reply didn't parse.
 2. **Guest JD endpoint in all three feeds**, Playwright deleted.
-3. **Fingerprint dedup** (`company|title|country`) alongside URL, so re-posts under new
-   IDs aren't re-judged and re-paid for.
+3. **Fingerprint dedup, tried and reverted.** `company|title|country` matched against
+   Sheet history blocked far too much: one PM Eval run kept 7 jobs and dropped 168 on
+   fingerprints versus 2 on already-seen URLs, because large Indian employers repost
+   the same title constantly and each posting is a job worth seeing. A 21-day key
+   expiry didn't help (547 of 603 rows were already inside the window). Sheet-level
+   dedup is URL-only again; `JobCollector` still merges the same company+title found
+   twice **within one run**, joining the locations — measured at 8 of 148 jobs on live
+   India data, all genuine duplicates.
 4. **One adaptive rate limiter** replacing fixed per-call-site sleeps, which had been
    spending roughly half the available request budget on dead time.
 5. **`JobCollector`** replacing two drifting copies of the filter/dedup loop.
@@ -138,9 +144,9 @@ Sheets calls use exponential backoff on 429/5xx.
 3. **Scraper fragility.** Selenium selectors are hardcoded CSS class fragments; LinkedIn
    card parsing swallows per-card errors, so a markup change degrades to a silent zero.
 4. **Recency filtering is lenient**: an unparseable "posted" string passes the window.
-5. **Fingerprint collisions.** Two genuinely distinct openings with the same title at the
-   same company in one country collapse to one row, and a role rejected once won't
-   resurface if re-posted.
+5. **Re-posts are re-judged.** With Sheet-level dedup back to URL-only, the same role
+   re-advertised under a new LinkedIn id is evaluated again. That's deliberate — the
+   alternative hid real openings — and costs fractions of a cent per job.
 6. **Detection only finds employers who say it.** Many companies sponsor visas without
    mentioning it, so the global feed's recall is bounded by JD wording, not by the code.
 7. **Public repo.** The candidate profile sits in the prompt in plain sight; secrets are
