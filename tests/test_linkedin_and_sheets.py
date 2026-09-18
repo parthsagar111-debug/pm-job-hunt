@@ -132,3 +132,85 @@ def test_compact_rows_never_raises_on_api_failure(capsys):
         def fetch_sheet_metadata(self): raise RuntimeError("sheets down")
     sw._compact_rows(SH(), [])          # cosmetic only — must not fail a save
     assert "couldn't compact" in capsys.readouterr().out
+
+
+# ── global visa feed: sponsors vs rejects go to different tabs
+class FakeWS:
+    def __init__(self, title):
+        self.title, self.id, self.row_count, self.rows = title, hash(title) % 100, 5000, []
+    def append_rows(self, rows, value_input_option=None):
+        self.rows.extend(rows)
+
+
+class FakeSheet:
+    def __init__(self, existing_urls=()):
+        self.tabs = {}
+        self.existing = list(existing_urls)
+    def worksheet(self, name):
+        if name not in self.tabs:
+            self.tabs[name] = FakeWS(name)
+        return self.tabs[name]
+    def fetch_sheet_metadata(self):
+        return {"sheets": [{"properties": {"sheetId": ws.id, "gridProperties": {"rowCount": 5000}}}
+                           for ws in self.tabs.values()]}
+    def batch_update(self, body):
+        pass
+
+
+def _patch_sheets(monkeypatch, sheet, seen=()):
+    monkeypatch.setattr(sw, "_get_client", lambda: type("C", (), {"open_by_key": lambda s, k: sheet})())
+    monkeypatch.setattr(sw, "_load_seen_urls", lambda sh, tabs=None: set(seen))
+    monkeypatch.setattr(sw, "_ensure_tab", lambda sh, name, headers: sh.worksheet(name))
+
+
+def _visa_job(url, verdict, evidence="quote", jd="x" * 500):
+    return {"url": url, "visa_verdict": verdict, "visa_evidence": evidence, "jd": jd,
+            "title": "Product Manager", "company": "ACME", "location": "Berlin, Germany",
+            "posted": "2 hours ago", "source": "LinkedIn Global"}
+
+
+def test_sponsors_and_rejects_land_in_separate_tabs(monkeypatch):
+    sheet = FakeSheet()
+    _patch_sheets(monkeypatch, sheet)
+    n_yes, n_no = sw.save_visa_jobs(
+        "sheet-id",
+        [_visa_job("https://www.linkedin.com/jobs/view/1", "YES")],
+        [_visa_job("https://www.linkedin.com/jobs/view/2", "NO", "we cannot sponsor visas")],
+    )
+    assert (n_yes, n_no) == (1, 1)
+    listings = sheet.tabs[sw.TAB_LISTINGS].rows
+    rejects  = sheet.tabs[sw.TAB_NO_SPONSOR].rows
+    assert listings[0][2] == "YES"
+    assert rejects[0][2] == "NO" and "cannot sponsor" in rejects[0][3]
+
+
+def test_reject_rows_carry_no_jd_column():
+    """180 rejects a day at 45,000 chars each would bloat the sheet for nothing."""
+    assert sw.HEADERS_VISA_NO == sw.HEADERS_VISA[:-1]
+    assert "JD" not in sw.HEADERS_VISA_NO
+
+
+def test_reject_rows_are_shorter_than_listing_rows(monkeypatch):
+    sheet = FakeSheet()
+    _patch_sheets(monkeypatch, sheet)
+    sw.save_visa_jobs("sheet-id",
+                      [_visa_job("https://www.linkedin.com/jobs/view/1", "YES")],
+                      [_visa_job("https://www.linkedin.com/jobs/view/2", "NO")])
+    assert len(sheet.tabs[sw.TAB_LISTINGS].rows[0]) == len(sw.HEADERS_VISA)
+    assert len(sheet.tabs[sw.TAB_NO_SPONSOR].rows[0]) == len(sw.HEADERS_VISA_NO)
+
+
+def test_already_seen_urls_are_skipped_in_both_tabs(monkeypatch):
+    sheet = FakeSheet()
+    _patch_sheets(monkeypatch, sheet, seen={"https://www.linkedin.com/jobs/view/1",
+                                            "https://www.linkedin.com/jobs/view/2"})
+    assert sw.save_visa_jobs("sheet-id",
+                             [_visa_job("https://www.linkedin.com/jobs/view/1", "YES")],
+                             [_visa_job("https://www.linkedin.com/jobs/view/2", "NO")]) == (0, 0)
+
+
+def test_writes_listings_even_with_no_rejects(monkeypatch):
+    sheet = FakeSheet()
+    _patch_sheets(monkeypatch, sheet)
+    assert sw.save_visa_jobs("sheet-id", [_visa_job("https://www.linkedin.com/jobs/view/9", "CONDITIONAL")]) == (1, 0)
+    assert sw.TAB_NO_SPONSOR not in sheet.tabs

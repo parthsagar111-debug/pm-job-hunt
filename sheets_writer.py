@@ -46,11 +46,14 @@ TAB_MAYBE = "Maybe"
 TAB_SKIP  = "Skip"
 
 # Global visa feed: one plain listing tab, no Apply/Maybe/Skip fit judgment.
-TAB_LISTINGS  = "Listings"
-HEADERS_VISA  = [
+TAB_LISTINGS   = "Listings"
+TAB_NO_SPONSOR = "No Sponsorship"
+HEADERS_VISA   = [
     "Month", "Date Found", "Visa", "Evidence", "Title", "Company",
     "Location", "Posted", "Source", "URL", "JD",
 ]
+# Same columns minus JD — rejects are for scanning, not for storing 45k-char cells.
+HEADERS_VISA_NO = HEADERS_VISA[:-1]
 
 HEADERS_EVAL = [
     "Month", "Date Found", "Title", "Company", "Location",
@@ -198,40 +201,56 @@ def _compact_rows(sh: gspread.Spreadsheet, worksheets: list) -> None:
     except Exception as e:
         print(f"  [sheets] Warning: couldn't compact row heights ({e}) — rows saved fine.")
 
-def save_visa_jobs(spreadsheet_id: str, jobs: list[dict]) -> int:
-    """Global visa feed: append rows to the single Listings tab. Each job carries
-    visa_verdict ("YES"/"CONDITIONAL") and visa_evidence. Returns rows written."""
+def save_visa_jobs(spreadsheet_id: str, jobs: list[dict],
+                   rejected: list[dict] | None = None) -> tuple[int, int]:
+    """Global visa feed. Sponsoring roles (YES/CONDITIONAL) go to Listings; the ones
+    Claude read and rejected go to "No Sponsorship" with the quoted evidence, so the
+    ~180 JDs a day that mention a visa word are inspectable instead of invisible.
+
+    Rejects carry no JD text — the evidence quote is the point, and 180 rows a day
+    of 45,000-char cells would bloat the sheet for nothing.
+
+    Returns (listings written, rejects written)."""
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
-    seen   = _load_seen_urls(sh, tabs=(TAB_LISTINGS,))
-
-    ws = _ensure_tab(sh, TAB_LISTINGS, HEADERS_VISA)
+    seen   = _load_seen_urls(sh, tabs=(TAB_LISTINGS, TAB_NO_SPONSOR))
 
     now       = _now_ist()
     month_str = now.strftime("%Y-%m")
     date_str  = now.strftime("%Y-%m-%d %H:%M")
 
-    rows = []
-    for job in jobs:
+    def build(job: dict, with_jd: bool) -> list | None:
         url = _clean_url(job.get("url", ""))
         if not url or url in seen:
-            continue
+            return None
         seen.add(url)
-        rows.append([
+        row = [
             month_str, date_str,
             job.get("visa_verdict", ""), job.get("visa_evidence", ""),
             job.get("title", ""), job.get("company", ""),
             job.get("location", ""), job.get("posted", ""),
             job.get("source", ""), url,
-            _jd_for_row(job.get("jd", "")),
-        ])
+        ]
+        return row + [_jd_for_row(job.get("jd", ""))] if with_jd else row
 
+    ws_listings = _ensure_tab(sh, TAB_LISTINGS, HEADERS_VISA)
+    rows        = [r for r in (build(j, True) for j in jobs) if r]
     if rows:
-        _with_retry(ws.append_rows, rows, value_input_option="USER_ENTERED")
-    _compact_rows(sh, [ws])
+        _with_retry(ws_listings.append_rows, rows, value_input_option="USER_ENTERED")
 
-    print(f"  Sheets: +{len(rows)} listing(s)")
-    return len(rows)
+    sheets_touched = [ws_listings]
+    no_rows        = []
+    if rejected:
+        ws_no   = _ensure_tab(sh, TAB_NO_SPONSOR, HEADERS_VISA_NO)
+        no_rows = [r for r in (build(j, False) for j in rejected) if r]
+        if no_rows:
+            _with_retry(ws_no.append_rows, no_rows, value_input_option="USER_ENTERED")
+        sheets_touched.append(ws_no)
+
+    _compact_rows(sh, sheets_touched)
+
+    print(f"  Sheets: +{len(rows)} listing(s), +{len(no_rows)} no-sponsorship row(s)")
+    return len(rows), len(no_rows)
 
 def save_eval_jobs(spreadsheet_id: str, jobs: list[dict]) -> tuple[int, int, int]:
     client = _get_client()

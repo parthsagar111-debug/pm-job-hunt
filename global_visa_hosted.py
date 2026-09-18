@@ -12,7 +12,8 @@ other feeds. The US is split by state when a country search hits LinkedIn's
 Runs ONCE and exits. Triggered via workflow_dispatch (cron-job.org or manually).
 
 Source:   LinkedIn (per-country search + guest JD endpoint, no browser)
-Output:   Google Sheet — single "Listings" tab, Visa column YES / CONDITIONAL
+Output:   Google Sheet — "Listings" (YES / CONDITIONAL) and "No Sponsorship"
+          (the rejected ones, with the quoted evidence)
 Notify:   ntfy push notification after run
 
 Required environment variables (set as GitHub Actions secrets):
@@ -47,7 +48,7 @@ from core_eval_hosted import (
     fetch_jd_guest, JobCollector, LI_LIMITER,
 )
 from gulf_eval_hosted import is_gulf_location
-from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS
+from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS, TAB_NO_SPONSOR
 from ntfy_notify import push
 
 SPREADSHEET_ID = os.environ.get("GLOBAL_VISA_SPREADSHEET_ID", "")
@@ -279,7 +280,9 @@ def main() -> None:
     _load_api_key()   # fail fast if the key is missing
 
     try:
-        seen = load_seen_urls(SPREADSHEET_ID, tabs=(TAB_LISTINGS,))
+        # Both tabs: a job already logged as "no sponsorship" shouldn't be
+        # re-fetched and re-classified every day for the same answer.
+        seen = load_seen_urls(SPREADSHEET_ID, tabs=(TAB_LISTINGS, TAB_NO_SPONSOR))
         print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}). Aborting.")
@@ -290,7 +293,7 @@ def main() -> None:
     print(f"\n  {len(jobs)} new product role(s) after {(time.time()-T0)/60:.0f} min of searching")
 
     print("\n  [2/2] Fetching JDs and checking visa support...")
-    keepers, counts = [], Counter()
+    keepers, rejected, counts = [], [], Counter()
     jd_ok = jd_fail = 0
     for i, job in enumerate(jobs, 1):
         if time.time() - T0 > MAX_RUNTIME_S:
@@ -308,13 +311,19 @@ def main() -> None:
             continue
         verdict, evidence = classify(job, excerpt)
         counts[verdict] += 1
+        job["visa_verdict"]  = verdict
+        job["visa_evidence"] = evidence
         if verdict in ("YES", "CONDITIONAL"):
-            job["visa_verdict"]  = verdict
-            job["visa_evidence"] = evidence
-            job["jd"]            = jd
+            job["jd"] = jd
             keepers.append(job)
             print(f"  [{i}/{len(jobs)}] ✅ {verdict}: {job['title']} @ {job['company']} "
                   f"({job['location']}) — {evidence[:110]}", flush=True)
+        elif verdict == "NO":
+            # Logged to the "No Sponsorship" tab: these JDs DID mention a visa term,
+            # so the evidence quote shows what Claude read it as — usually an explicit
+            # refusal. ERROR is left out: it means we never got an answer, so the job
+            # must stay un-recorded and be retried next run.
+            rejected.append(job)
         if i % 200 == 0:
             print(f"  … {i}/{len(jobs)} JDs done, {len(keepers)} sponsoring so far", flush=True)
 
@@ -325,7 +334,8 @@ def main() -> None:
           f"YES {counts['YES']}  CONDITIONAL {counts['CONDITIONAL']}  NO {counts['NO']}  "
           f"ERROR {counts['ERROR']}  |  Haiku ${cost:.2f}")
 
-    n_new = save_visa_jobs(SPREADSHEET_ID, keepers) if keepers else 0
+    n_new, n_no = ((0, 0) if not (keepers or rejected)
+                   else save_visa_jobs(SPREADSHEET_ID, keepers, rejected))
 
     n_yes  = sum(1 for j in keepers if j["visa_verdict"] == "YES")
     n_cond = len(keepers) - n_yes
