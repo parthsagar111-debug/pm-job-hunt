@@ -26,7 +26,7 @@ Repo: `github.com/parthsagar111-debug/pm-job-hunt` (public, Python 3.11, single
 |---|---|---|---|---|
 | PM Eval (India) | every 30 min, 08:05–23:35 IST | 4–5 min | **1.7 min** | ~3–17 jobs judged |
 | Gulf PM Eval | 12:10 and 21:10 IST | ~15 min | **1 min** | ~10 jobs |
-| Global Visa | 03:00 IST daily | 115 min | **22 min** | **$0.16** |
+| Global Visa | 03:00 IST daily | 115 min | **41 min** (12 countries + Adzuna) | **$0.03-0.29** |
 
 ## Files
 - `core_eval_hosted.py` — shared engine: LinkedIn client (search, pagination, guest JD
@@ -35,7 +35,9 @@ Repo: `github.com/parthsagar111-debug/pm-job-hunt` (public, Python 3.11, single
 - `pm_eval_hosted.py` — India feed: 9 LinkedIn keyword searches + 3 Selenium sites,
   24h window, Apply/Maybe/Skip.
 - `gulf_eval_hosted.py` — GCC feed: 6 countries, deterministic Arabic-requirement override.
-- `global_visa_hosted.py` — 10-country feed: visa-sponsorship filter, no fit judgment.
+- `global_visa_hosted.py` — 12-country feed: visa-sponsorship filter, no fit judgment.
+- `sponsor_registry.py` — UK/NL government sponsor registers, the company-level signal.
+- `adzuna_source.py` — second job source; dormant without ADZUNA_APP_ID/KEY.
 - `sheets_writer.py` — gspread I/O, dedup reads, row formatting.
 - `ntfy_notify.py` — push notification.
 - `tests/` — 105 offline tests; `.github/workflows/tests.yml` runs them on every push.
@@ -153,6 +155,27 @@ Sheets calls use exponential backoff on 429/5xx.
    Actions secrets, but run logs are public.
 8. **Judgment quality.** ~60% of Gulf results land in Maybe against a 35% target, so the
    fit judgment carries little signal at the margin.
+
+## Sources beyond LinkedIn (added 2026-09-18)
+JD text alone yields almost nothing in steady state: known sponsors are deduped
+forever, so a 1,500-role day produced 0-2 confirmed offers. Two additions:
+
+**Government sponsor registers** — the employer side of the same fact, so a company
+can be checked when its listing is silent. UK Register of Licensed Sponsors (free
+CSV followed from the gov.uk page, ~121,500 Skilled Worker entries) and the NL IND
+Public Register (~12,960, HTML table). Own Sheet column, never a decision: a licence
+means the employer CAN sponsor. Matching is conservative — registry entries are legal
+names, so "Deliveroo" resolves only via "ROOFOODS LTD T/A DELIVEROO", and a company
+called "Starling" matches two entries and is therefore left unmatched. Measured:
+**50 jobs at licensed sponsors in one run, 49 with JDs that never mention visas.**
+
+**Adzuna** — one JSON API over 10 of the 12 countries (Ireland isn't hosted; Sweden
+and Cyprus have no site). **+531 jobs in one run** on top of LinkedIn. Use
+`title_only`, not `what`: free-text search dragged in 1,297 non-PM titles. Its
+descriptions are truncated (~200 chars), so it contributes discovery and the licence
+column rather than JD-based proof. Adzuna reports region-level locations
+("London, UK"), which silently bypassed the register lookup until the country was
+attached at the source — see `location_country`'s alias map.
 
 ## Questions worth a second opinion
 - Given a hard ~1,000-result ceiling per query and no working time-slicing, what's the

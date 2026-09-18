@@ -5,7 +5,7 @@
 |---|---|---|---|
 | **PM Eval — India Jobs** | `pm_eval_hosted.py` | India PM jobs — LinkedIn + Naukri + Hirist + IIMJobs, last 24h | `PM_EVAL_SPREADSHEET_ID` |
 | **Gulf PM Eval** | `gulf_eval_hosted.py` | PM jobs in UAE, Saudi Arabia, Qatar, Bahrain, Oman, Kuwait — LinkedIn, last 24h or last week | `GULF_SPREADSHEET_ID` |
-| **Global Visa PM** | `global_visa_hosted.py` | PM jobs worldwide (except India + Gulf) whose JD offers visa sponsorship — LinkedIn, last 24h | `GLOBAL_VISA_SPREADSHEET_ID` |
+| **Global Visa PM** | `global_visa_hosted.py` | PM jobs in 12 countries whose JD offers visa sponsorship, plus UK/NL licensed-sponsor flags — LinkedIn + Adzuna, last 24h | `GLOBAL_VISA_SPREADSHEET_ID`, optional `ADZUNA_APP_ID`/`ADZUNA_APP_KEY` |
 
 All three are triggered externally by cron-job.org calling GitHub's `workflow_dispatch`
 API (not GitHub's own built-in cron). PM Eval currently runs every 30 minutes.
