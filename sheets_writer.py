@@ -51,9 +51,13 @@ TAB_NO_SPONSOR = "No Sponsorship"
 HEADERS_VISA   = [
     "Month", "Date Found", "Visa", "Evidence", "Title", "Company",
     "Location", "Posted", "Source", "URL", "JD",
+    # Company-level signal from the UK/NL government sponsor registers. Deliberately
+    # its own column and never a decision: a licence means the employer CAN sponsor,
+    # not that they will for this role. Appended last so existing rows stay aligned.
+    "Sponsor licence",
 ]
-# Same columns minus JD — rejects are for scanning, not for storing 45k-char cells.
-HEADERS_VISA_NO = HEADERS_VISA[:-1]
+# Rejects skip the JD cell — they're for scanning, not for storing 45k-char cells.
+HEADERS_VISA_NO = [h for h in HEADERS_VISA if h != "JD"]
 
 HEADERS_EVAL = [
     "Month", "Date Found", "Title", "Company", "Location",
@@ -78,7 +82,8 @@ def _jd_for_row(jd_text: str) -> str:
 
 _URL_PATTERN = re.compile(
     r'https?://(www\.)?('
-    r'linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/'
+    r'linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/|'
+    r'adzuna\.[a-z.]+/'      # Adzuna redirect links, or dedup would re-add them daily
     r')\S+'
 )
 
@@ -94,11 +99,25 @@ def _get_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Worksheet:
-    """Get or create tab. Only writes headers if tab is new or row 1 is completely empty."""
+    """Get or create tab. Writes headers only if row 1 is empty, and appends any
+    header this code writes that the tab doesn't have yet — a new column added to
+    the end would otherwise arrive as an unlabelled column on an existing sheet.
+    Existing header cells are never reordered or overwritten, so old rows stay aligned."""
     try:
         ws = sh.worksheet(name)
         # Only fix headers if row 1 is empty — never overwrite on existing data tabs
-        first_cell = ws.cell(1, 1).value or ""
+        existing = [h.strip() for h in (_with_retry(ws.row_values, 1) or [])]
+        if existing and any(h not in existing for h in headers):
+            missing = [h for h in headers if h not in existing]
+            start   = len(existing) + 1
+            try:
+                ws.update_cell(1, start, missing[0]) if len(missing) == 1 else ws.update(
+                    f"{gspread.utils.rowcol_to_a1(1, start)}", [missing],
+                    value_input_option="USER_ENTERED")
+                print(f"  [sheets] {name}: added column header(s) {missing}")
+            except Exception as e:
+                print(f"  [sheets] Warning: couldn't add header(s) {missing} to {name}: {e}")
+        first_cell = existing[0] if existing else ""
         if not first_cell.strip():
             ws.update("A1", [headers], value_input_option="USER_ENTERED")
             try:
@@ -224,14 +243,15 @@ def save_visa_jobs(spreadsheet_id: str, jobs: list[dict],
         if not url or url in seen:
             return None
         seen.add(url)
-        row = [
+        head = [
             month_str, date_str,
             job.get("visa_verdict", ""), job.get("visa_evidence", ""),
             job.get("title", ""), job.get("company", ""),
             job.get("location", ""), job.get("posted", ""),
             job.get("source", ""), url,
         ]
-        return row + [_jd_for_row(job.get("jd", ""))] if with_jd else row
+        jd_cell = [_jd_for_row(job.get("jd", ""))] if with_jd else []
+        return head + jd_cell + [job.get("sponsor_licence", "")]
 
     ws_listings = _ensure_tab(sh, TAB_LISTINGS, HEADERS_VISA)
     rows        = [r for r in (build(j, True) for j in jobs) if r]

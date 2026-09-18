@@ -11,7 +11,8 @@ other feeds. The US is split by state when a country search hits LinkedIn's
 
 Runs ONCE and exits. Triggered via workflow_dispatch (cron-job.org or manually).
 
-Source:   LinkedIn (per-country search + guest JD endpoint, no browser)
+Source:   LinkedIn (per-country search + guest JD endpoint, no browser), plus
+          Adzuna when ADZUNA_APP_ID/ADZUNA_APP_KEY are set
 Output:   Google Sheet — "Listings" (YES / CONDITIONAL) and "No Sponsorship"
           (the rejected ones, with the quoted evidence)
 Notify:   ntfy push notification after run
@@ -22,6 +23,8 @@ Required environment variables (set as GitHub Actions secrets):
   GLOBAL_VISA_SPREADSHEET_ID    — Google Sheet ID for this script's output
   NTFY_TOPIC                    — your ntfy topic name
 Optional:
+  ADZUNA_APP_ID / ADZUNA_APP_KEY — free key from developer.adzuna.com; without
+                                   them the Adzuna source is skipped entirely
   TIME_RANGE                    — "24h" (default) or "week"
 
 Sizing, from the 2026-09-17 probe of one 24h window (see git history, branch
@@ -48,6 +51,8 @@ from core_eval_hosted import (
     fetch_jd_guest, JobCollector, LI_LIMITER,
 )
 from gulf_eval_hosted import is_gulf_location
+from sponsor_registry import SponsorRegistry
+import adzuna_source
 from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS, TAB_NO_SPONSOR
 from ntfy_notify import push
 
@@ -72,11 +77,14 @@ COUNTRIES = [
     "Germany",          #  72 roles/day, 1-2 hits
     "Canada",           #  61 roles/day, 1 hit in the probe
     "Spain",            #  43 roles/day, 1 hit in the probe
-    "Netherlands",      #  38 roles/day, 0 hits so far
-    "Singapore",        #  38 roles/day, 0 hits so far
+    "Netherlands",      #  38 roles/day, 0 JD hits — but the IND sponsor register covers it
     "Australia",        #  18 roles/day, 0 hits so far
     "Ireland",          #  29 roles/day, 0 hits so far
     "Cyprus",           # tiny market, but 1 hit in both runs
+    # Added 2026-09-18, replacing Singapore (2 full sweeps, 0 hits, no sponsor register):
+    "France",           #  71-81 roles/day — highest volume of the countries not yet covered
+    "Poland",           #  42 roles/day — IT sector that relocates routinely
+    "Sweden",           #  24 roles/day — employer-led permits, English-first workplaces
 ]
 
 US_STATES = [
@@ -294,13 +302,16 @@ def main() -> None:
 
     print("\n  [2/2] Fetching JDs and checking visa support...")
     keepers, rejected, counts = [], [], Counter()
+    registry = SponsorRegistry()
     jd_ok = jd_fail = 0
     for i, job in enumerate(jobs, 1):
         if time.time() - T0 > MAX_RUNTIME_S:
             print(f"  ⏱ runtime limit reached at {i}/{len(jobs)} — saving what's done; "
                   f"the rest will be picked up next run.", flush=True)
             break
-        jd = fetch_jd_guest(job["job_id"])
+        # Adzuna hands us a truncated description with the listing; LinkedIn needs a fetch.
+        jd = job.get("jd_text") or (fetch_jd_guest(job["job_id"])
+                                    if job["job_id"].startswith("li_") else "")
         if len(jd) < 100:
             jd_fail += 1
             continue
@@ -308,11 +319,23 @@ def main() -> None:
         excerpt = visa_excerpt(jd)
         if not excerpt:
             counts["no visa terms"] += 1
+            # The JD says nothing about visas — but if the employer holds a UK/NL
+            # sponsor licence, that's exactly the case the registers exist for, and
+            # the job is worth surfacing. Recorded as NOT STATED so the Visa column
+            # never implies an offer that wasn't made.
+            licence = registry.lookup(job.get("company", ""), job.get("location", ""))
+            if licence:
+                job["visa_verdict"]   = "NOT STATED"
+                job["visa_evidence"]  = ""
+                job["sponsor_licence"] = licence
+                rejected.append(job)
+                counts["licensed sponsor, JD silent"] += 1
             continue
         verdict, evidence = classify(job, excerpt)
         counts[verdict] += 1
-        job["visa_verdict"]  = verdict
-        job["visa_evidence"] = evidence
+        job["visa_verdict"]   = verdict
+        job["visa_evidence"]  = evidence
+        job["sponsor_licence"] = registry.lookup(job.get("company", ""), job.get("location", ""))
         if verdict in ("YES", "CONDITIONAL"):
             job["jd"] = jd
             keepers.append(job)

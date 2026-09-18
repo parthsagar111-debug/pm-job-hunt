@@ -186,8 +186,11 @@ def test_sponsors_and_rejects_land_in_separate_tabs(monkeypatch):
 
 def test_reject_rows_carry_no_jd_column():
     """180 rejects a day at 45,000 chars each would bloat the sheet for nothing."""
-    assert sw.HEADERS_VISA_NO == sw.HEADERS_VISA[:-1]
     assert "JD" not in sw.HEADERS_VISA_NO
+    assert "JD" in sw.HEADERS_VISA
+    # Everything else, including the sponsor-licence column, is shared.
+    assert sw.HEADERS_VISA_NO == [h for h in sw.HEADERS_VISA if h != "JD"]
+    assert sw.HEADERS_VISA[-1] == "Sponsor licence"
 
 
 def test_reject_rows_are_shorter_than_listing_rows(monkeypatch):
