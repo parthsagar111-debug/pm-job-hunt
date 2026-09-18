@@ -16,14 +16,24 @@ sponsor the work visa as standard, so it doesn't check each job for visa
 support — instead it skips roles restricted to local nationals
 (Emiratisation/Saudization) or requiring Arabic.
 
-**Global Visa PM** gives no Apply/Maybe/Skip judgment. It searches 10 countries —
+**Global Visa PM** gives no Apply/Maybe/Skip judgment. It searches 12 countries —
 US (split by state, since it always hits LinkedIn's ~1000-result cap), UK, Germany,
-Canada, Spain, Netherlands, Singapore, Australia, Ireland, Cyprus — reads each JD from
-LinkedIn's guest endpoint (no browser), and keeps a job only when Claude Haiku confirms the
-employer offers visa sponsorship — `YES`, or `CONDITIONAL` for "may be available".
-Relocation support alone doesn't qualify. Only the visa-related lines of the JD
-are sent to Claude, which keeps a full run at roughly $0.08. A 24h sweep takes
-~45-60 min and yields ~8–12 sponsoring roles a day.
+Canada, Spain, Netherlands, Australia, Ireland, Cyprus, France, Poland, Sweden —
+reads each JD from LinkedIn's guest endpoint (no browser), and keeps a job only when
+Claude Haiku confirms the employer offers visa sponsorship: `YES`, or `CONDITIONAL`
+for "may be available". Relocation support alone doesn't qualify. Only the
+visa-related lines of the JD are sent to Claude, so a run costs cents.
+
+Two tabs: **Listings** (YES/CONDITIONAL) and **No Sponsorship** (everything Claude
+read and rejected, with the quoted evidence). A separate **Sponsor licence** column
+flags employers on the UK Register of Licensed Sponsors or the NL IND register — a
+licence means the employer *can* sponsor, not that they will, so it never promotes a
+job into Listings. UK/NL jobs whose JD never mentions visas appear as `NOT STATED`
+with the licence recorded.
+
+**Adzuna** (optional) adds ~500 jobs a run across 10 of the 12 countries; set
+`ADZUNA_APP_ID` and `ADZUNA_APP_KEY` (free at developer.adzuna.com) or it's skipped.
+A 24h sweep takes ~40-60 min.
 
 ---
 
@@ -58,6 +68,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `PM_EVAL_SPREADSHEET_ID`      | Sheet ID for "PM Job Eval"                  |
 | `GULF_SPREADSHEET_ID`         | Sheet ID for "Gulf PM Eval"                 |
 | `GLOBAL_VISA_SPREADSHEET_ID`  | Sheet ID for "Global Visa PM"               |
+| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | Optional — free key from developer.adzuna.com |
 | `NTFY_TOPIC`                  | Your ntfy topic name (e.g. `parth-pm-jobs`) |
 
 ---
@@ -102,9 +113,9 @@ Each row: Month, Date Found, Title, Company, Location, Source, Decision, Reason,
 pip install -r requirements_hosted.txt -r requirements_dev.txt
 python -m pytest tests -q
 ```
-105 offline tests (no network, no API key) cover the title/location filters, the
-fingerprint dedup, the Claude schema guard, the mandatory-Arabic override, the
-visa excerpt, LinkedIn parsing/pagination and the Sheets helpers. CI runs them on
+141 offline tests (no network, no API key) cover the title/location filters, dedup,
+the Claude schema guard, the mandatory-Arabic override, the visa excerpt, LinkedIn
+parsing/pagination, the sponsor-register matcher and the Sheets helpers. CI runs them on
 every push to master. See TECHNICAL_BRIEF.md for the architecture and the
 measured LinkedIn rate limits.
 
