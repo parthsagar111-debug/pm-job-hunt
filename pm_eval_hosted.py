@@ -28,7 +28,7 @@ from core_eval_hosted import (
     within_24hrs, evaluate_batch,
     SEARCH_KEYWORD, JobCollector, LI_LIMITER,
 )
-from sheets_writer import save_eval_jobs, load_seen_keys
+from sheets_writer import save_eval_jobs, load_seen_urls
 from ntfy_notify import run_summary
 from datetime import datetime
 
@@ -53,8 +53,8 @@ def main() -> None:
     # Claude API tokens for nothing. Load the real seen-set from the Sheet now,
     # not just at write time.
     try:
-        seen, seen_keys = load_seen_keys(SPREADSHEET_ID)
-        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_keys)} known role key(s) from Sheet")
+        seen = load_seen_urls(SPREADSHEET_ID)
+        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}).")
         print("  Aborting run rather than risk re-evaluating everything at full API cost.")
@@ -63,7 +63,7 @@ def main() -> None:
     # Same collector the Gulf and global feeds use, so the per-reason counters show
     # exactly why jobs dropped out — otherwise a quiet run is indistinguishable from
     # an over-aggressive filter.
-    collector = JobCollector(seen_urls=seen, seen_keys=seen_keys, max_per_company=2)
+    collector = JobCollector(seen_urls=seen, max_per_company=2)
 
     for name, fetch_fn in SOURCES:
         icon = SOURCE_ICONS.get(name, "🔔")

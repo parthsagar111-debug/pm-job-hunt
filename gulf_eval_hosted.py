@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core_eval_hosted import (
     fetch_linkedin, evaluate_batch, JobCollector, LI_LIMITER,
 )
-from sheets_writer import save_eval_jobs, load_seen_keys
+from sheets_writer import save_eval_jobs, load_seen_urls
 from ntfy_notify import run_summary
 from datetime import datetime
 
@@ -193,13 +193,13 @@ reason (max 15 words), gap (biggest gap, or "None")."""
 # ─────────────────────────────────────────────
 # FETCH
 # ─────────────────────────────────────────────
-def fetch_gulf_jobs(time_range: str, seen: set[str], seen_keys: set[str] | None = None) -> list[dict]:
+def fetch_gulf_jobs(time_range: str, seen: set[str]) -> list[dict]:
     """Search each GCC country and return the new roles. Filtering, dedup and the
     per-company cap live in core's JobCollector, shared with the global feed —
     including collapsing a regional role posted in several countries under
     different ids (Stryker's META PM appeared in both Dubai and Riyadh)."""
     collector = JobCollector(
-        seen_urls=seen, seen_keys=seen_keys,
+        seen_urls=seen,
         location_ok=is_gulf_location,
         max_per_company=MAX_PER_COMPANY,
         source="LinkedIn Gulf",
@@ -236,14 +236,14 @@ def main() -> None:
 
     # Dedup before evaluation — evaluating already-seen jobs burns Claude API tokens.
     try:
-        seen, seen_keys = load_seen_keys(SPREADSHEET_ID)
-        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_keys)} known role key(s) from Sheet")
+        seen = load_seen_urls(SPREADSHEET_ID)
+        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}).")
         print("  Aborting run rather than risk re-evaluating everything at full API cost.")
         sys.exit(1)
 
-    all_jobs = fetch_gulf_jobs(TIME_RANGE, seen, seen_keys)
+    all_jobs = fetch_gulf_jobs(TIME_RANGE, seen)
 
     print(f"\n{'='*55}")
     print(f"  Total: {len(all_jobs)} jobs  |  Evaluating with Claude AI...")

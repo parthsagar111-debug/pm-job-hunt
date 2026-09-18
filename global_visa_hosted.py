@@ -47,7 +47,7 @@ from core_eval_hosted import (
     fetch_jd_guest, JobCollector, LI_LIMITER,
 )
 from gulf_eval_hosted import is_gulf_location
-from sheets_writer import save_visa_jobs, load_seen_keys, TAB_LISTINGS
+from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS
 from ntfy_notify import push
 
 SPREADSHEET_ID = os.environ.get("GLOBAL_VISA_SPREADSHEET_ID", "")
@@ -138,12 +138,12 @@ def search(location: str, keyword: str = "Product Manager",
         pages += 1
     return hits, len(ids), pages
 
-def collect_jobs(seen: set[str], seen_keys: set[str]) -> list[dict]:
+def collect_jobs(seen: set[str]) -> list[dict]:
     """One search per country (US by state if it hits the cap), keeping new product
     roles outside India/the Gulf. A role posted in several cities is kept once, with
     the other locations appended — Anthropic's PM Growth showed up in 3 US cities."""
     collector = JobCollector(
-        seen_urls=seen, seen_keys=seen_keys,
+        seen_urls=seen,
         location_ok=lambda loc: not (_INDIA.search(loc) or is_gulf_location(loc)),
         title_ok=is_product_role,
         source="LinkedIn Global",
@@ -279,14 +279,14 @@ def main() -> None:
     _load_api_key()   # fail fast if the key is missing
 
     try:
-        seen, seen_keys = load_seen_keys(SPREADSHEET_ID, tabs=(TAB_LISTINGS,))
-        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_keys)} known role key(s) from Sheet")
+        seen = load_seen_urls(SPREADSHEET_ID, tabs=(TAB_LISTINGS,))
+        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}). Aborting.")
         sys.exit(1)
 
     print("\n  [1/2] Searching LinkedIn per country...")
-    jobs = collect_jobs(seen, seen_keys)
+    jobs = collect_jobs(seen)
     print(f"\n  {len(jobs)} new product role(s) after {(time.time()-T0)/60:.0f} min of searching")
 
     print("\n  [2/2] Fetching JDs and checking visa support...")

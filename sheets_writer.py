@@ -142,69 +142,6 @@ def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE
     print(f"  [sheets] Dedup: {len(seen)} existing URLs loaded")
     return seen
 
-# Fingerprint keys expire. Without a window, every company|title ever recorded
-# blocks new postings forever: measured 2026-09-18, a PM Eval run kept 7 jobs and
-# dropped 168 on fingerprints built from 596 rows going back months — almost all of
-# them genuinely new openings at employers who had simply posted that title before
-# ("Product Manager @ Google" in August blocking September's). Within a few weeks a
-# repeat is a re-post; months later it's a new job.
-FINGERPRINT_TTL_DAYS = 21
-
-def _load_seen_fingerprints(sh: gspread.Spreadsheet, tabs: tuple,
-                            ttl_days: int = FINGERPRINT_TTL_DAYS) -> set[str]:
-    """Company|title|country keys for rows added in the last `ttl_days`. Second dedup
-    key alongside URL: a re-posted role gets a new LinkedIn id, so URL alone lets it
-    through and we pay Claude to judge it again. Columns are found by header name,
-    same as the URL read, so column order can change safely. A row with an unreadable
-    date is treated as old — it costs one evaluation, where the reverse would hide a job."""
-    from core_eval_hosted import job_fingerprint
-
-    cutoff = _now_ist() - timedelta(days=ttl_days)
-    keys   = set()
-    for tab in tabs:
-        try:
-            ws      = sh.worksheet(tab)
-            headers = _with_retry(ws.row_values, 1)
-            needed  = ("Title", "Company", "Location", "Date Found")
-            if not all(h in headers for h in needed):
-                print(f"  [sheets] Warning: {tab} lacks {'/'.join(needed)} — no fingerprint dedup for it.")
-                continue
-            cols = {h: _with_retry(ws.col_values, headers.index(h) + 1)[1:] for h in needed}
-            for title, company, location, found in zip(cols["Title"], cols["Company"],
-                                                       cols["Location"], cols["Date Found"]):
-                if not (title and company):
-                    continue
-                if not _is_recent(found, cutoff):
-                    continue
-                keys.add(job_fingerprint(company, title, location))
-        except gspread.WorksheetNotFound:
-            pass
-        except Exception as e:
-            print(f"  [sheets] Warning: fingerprint read failed for {tab}: {e}")
-    return keys
-
-def _is_recent(date_found: str, cutoff: datetime) -> bool:
-    """Rows are written as '%Y-%m-%d %H:%M' IST; tolerate a bare date too."""
-    text = (date_found or "").strip()
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(text, fmt).replace(tzinfo=IST) >= cutoff
-        except ValueError:
-            continue
-    return False
-
-def load_seen_keys(spreadsheet_id: str,
-                   tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> tuple[set[str], set[str]]:
-    """(urls, fingerprints) for everything already in the Sheet. Callers filter on
-    both BEFORE evaluating, so neither a repeat URL nor a re-post costs API tokens."""
-    client = _get_client()
-    sh     = _with_retry(client.open_by_key, spreadsheet_id)
-    urls   = _load_seen_urls(sh, tabs=tabs)
-    fps    = _load_seen_fingerprints(sh, tabs=tabs)
-    print(f"  [sheets] Dedup: {len(fps)} company|title|country key(s) from the last "
-          f"{FINGERPRINT_TTL_DAYS} days")
-    return urls, fps
-
 def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set:
     """
     Public entry point: open the sheet and return the set of already-seen job URLs.
