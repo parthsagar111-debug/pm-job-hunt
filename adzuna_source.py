@@ -70,7 +70,7 @@ def fetch(country: str, keyword: str = "product manager", days_old: int = 1) -> 
         params = {
             "app_id": app_id, "app_key": app_key,
             "results_per_page": RESULTS_PER_PAGE,
-            "what": keyword,
+            "title_only": keyword,
             "max_days_old": days_old,
             "sort_by": "date",
             "content-type": "application/json",
@@ -94,12 +94,19 @@ def fetch(country: str, keyword: str = "product manager", days_old: int = 1) -> 
             url    = item.get("redirect_url", "")
             if not (job_id and url):
                 continue
+            # Adzuna returns region-level strings ("London, UK", "Amsterdam,
+            # Noord-Holland"). The country is appended because the sponsor-register
+            # lookup and the India/Gulf exclusions both key on it — we know the
+            # country here for certain, since it's the one we queried.
+            where = (item.get("location") or {}).get("display_name", "")
+            if country.lower() not in where.lower():
+                where = f"{where}, {country}" if where else country
             out.append({
                 "source":    "Adzuna",
                 "job_id":    "az_" + job_id,
                 "title":     (item.get("title") or "").replace("<strong>", "").replace("</strong>", ""),
                 "company":   (item.get("company") or {}).get("display_name", ""),
-                "location":  (item.get("location") or {}).get("display_name", ""),
+                "location":  where,
                 "posted":    (item.get("created") or "")[:10],
                 "posted_dt": item.get("created", ""),
                 "url":       url,

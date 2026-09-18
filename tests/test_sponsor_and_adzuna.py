@@ -147,3 +147,47 @@ def test_api_failure_returns_empty_not_raise(monkeypatch):
         raise ConnectionError("adzuna down")
     monkeypatch.setattr(adzuna_source.requests, "get", boom)
     assert adzuna_source.fetch("United Kingdom") == []
+
+
+# ── country aliases: an unmapped spelling silently means "no licence check"
+@pytest.mark.parametrize("location,expected", [
+    ("London, UK", "united kingdom"),                 # Adzuna's spelling
+    ("Cambridge, England, United Kingdom", "united kingdom"),
+    ("Edinburgh, Scotland", "united kingdom"),
+    ("Amsterdam, Noord-Holland", "netherlands"),
+    ("Rotterdam, Holland", "netherlands"),
+    ("Berlin, Deutschland", "germany"),
+    ("Madrid, Espana", "spain"),
+    ("Seattle, WA", "united states"),
+])
+def test_country_aliases(location, expected):
+    from core_eval_hosted import location_country
+    assert location_country(location) == expected
+
+
+def test_adzuna_location_carries_the_country(monkeypatch):
+    """Without this the UK register never fires on Adzuna rows: "London, UK" alone
+    resolves to a country token the registry doesn't key on."""
+    monkeypatch.setenv("ADZUNA_APP_ID", "id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key")
+
+    class R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"results": [
+                {"id": 1, "title": "Product Manager", "company": {"display_name": "ACME"},
+                 "location": {"display_name": "Manchester, Greater Manchester"},
+                 "created": "2026-09-18T09:00:00Z", "redirect_url": "https://www.adzuna.co.uk/land/ad/1",
+                 "description": "..."},
+                {"id": 2, "title": "Product Manager", "company": {"display_name": "ACME"},
+                 "location": {"display_name": "London, United Kingdom"},
+                 "created": "2026-09-18T09:00:00Z", "redirect_url": "https://www.adzuna.co.uk/land/ad/2",
+                 "description": "..."},
+            ]}
+
+    monkeypatch.setattr(adzuna_source.requests, "get", lambda *a, **k: R())
+    jobs = adzuna_source.fetch("United Kingdom")
+    from core_eval_hosted import location_country
+    assert all(location_country(j["location"]) == "united kingdom" for j in jobs)
+    assert jobs[1]["location"] == "London, United Kingdom"   # not duplicated

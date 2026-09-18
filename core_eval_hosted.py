@@ -664,14 +664,28 @@ _US_STATE_TOKENS = {
 def _norm(s: str) -> str:
     return " ".join(re.sub(r"[^\w]+", " ", (s or "").lower()).split())
 
+# Different sources spell the same country differently: LinkedIn says "Cambridge,
+# England, United Kingdom" while Adzuna says "London, UK" — and the sponsor-register
+# lookup keys on the country, so an unmapped alias silently means "no licence check".
+_COUNTRY_ALIASES = {
+    "uk": "united kingdom", "u k": "united kingdom", "gb": "united kingdom",
+    "great britain": "united kingdom", "england": "united kingdom",
+    "scotland": "united kingdom", "wales": "united kingdom",
+    "northern ireland": "united kingdom",
+    "holland": "netherlands", "nederland": "netherlands",
+    "noord holland": "netherlands", "zuid holland": "netherlands",
+    "deutschland": "germany", "espana": "spain", "españa": "spain",
+    "eire": "ireland", "republic of ireland": "ireland",
+}
+
 def location_country(location: str) -> str:
-    """Coarse country token from a LinkedIn location string. US listings carry a
-    state rather than a country ("Seattle, WA"), so those collapse to one token."""
+    """Coarse country token from a location string. US listings carry a state rather
+    than a country ("Seattle, WA"), so those collapse to one token."""
     first = (location or "").split("/")[0]            # merged multi-city rows
     last  = _norm(first.split(",")[-1])
     if last in _US_STATE_TOKENS:
         return "united states"
-    return last
+    return _COUNTRY_ALIASES.get(last, last)
 
 def job_fingerprint(company: str, title: str, location: str) -> str:
     return f"{_norm(company)}|{_norm(title)}|{location_country(location)}"
