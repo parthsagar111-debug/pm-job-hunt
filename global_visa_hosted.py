@@ -177,6 +177,21 @@ def collect_jobs(seen: set[str]) -> list[dict]:
             print("  United States hit the cap — splitting by state", flush=True)
             for st in US_STATES:
                 run(f"US / {st}", f"{st}, United States")
+
+    # Adzuna: a second source over the same countries, skipped entirely when the
+    # credentials aren't set. Same collector, so the filters and dedup apply equally
+    # and anything LinkedIn already returned is dropped as a duplicate.
+    if adzuna_source.is_configured():
+        print("\n  [adzuna] fetching...", flush=True)
+        for country in COUNTRIES:
+            before = collector.counts["kept"]
+            for job in adzuna_source.fetch(country):
+                collector.add(job, label=f"Adzuna / {country}")
+            kept = collector.counts["kept"] - before
+            print(f"  Adzuna {country:<24} → +{kept}", flush=True)
+    else:
+        print("\n  [adzuna] ADZUNA_APP_ID/ADZUNA_APP_KEY not set — LinkedIn only", flush=True)
+
     print(f"\n  Collected: {collector.summary()}")
     return collector.jobs
 
@@ -351,7 +366,11 @@ def main() -> None:
             print(f"  … {i}/{len(jobs)} JDs done, {len(keepers)} sponsoring so far", flush=True)
 
     cost = USAGE["input_tokens"] / 1e6 * 1.0 + USAGE["output_tokens"] / 1e6 * 5.0  # Haiku 4.5 $1/$5 per MTok
+    n_licensed = sum(1 for j in keepers + rejected if j.get("sponsor_licence"))
     print(f"\n  Rate: {LI_LIMITER.summary()}")
+    print(f"  Sponsor registers: {n_licensed} job(s) at a licensed UK/NL sponsor, "
+          f"{counts['licensed sponsor, JD silent']} of them with a JD that never mentions visas"
+          + (f" | {'; '.join(registry.errors)}" if registry.errors else ""))
     print(f"  JDs: {jd_ok} fetched, {jd_fail} failed  |  "
           f"visa lines found: {sum(counts[k] for k in ('YES','CONDITIONAL','NO','ERROR'))}  |  "
           f"YES {counts['YES']}  CONDITIONAL {counts['CONDITIONAL']}  NO {counts['NO']}  "
