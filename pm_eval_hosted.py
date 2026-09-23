@@ -26,7 +26,7 @@ from core_eval_hosted import (
     SOURCES, SOURCE_ICONS,
     sort_newest_first,
     within_24hrs, evaluate_batch,
-    SEARCH_KEYWORD, JobCollector, LI_LIMITER,
+    SEARCH_KEYWORD, JobCollector, LI_LIMITER, is_india_location,
 )
 from sheets_writer import save_eval_jobs, load_seen_urls
 from ntfy_notify import run_summary
@@ -63,7 +63,17 @@ def main() -> None:
     # Same collector the Gulf and global feeds use, so the per-reason counters show
     # exactly why jobs dropped out — otherwise a quiet run is indistinguishable from
     # an over-aggressive filter.
-    collector = JobCollector(seen_urls=seen, max_per_company=2)
+    # India only. LinkedIn pads a thin "India" page with worldwide listings (2026-09-23: 55 jobs from
+    # Vietnam, Germany, France, Singapore...), so anything whose location names another country is
+    # dropped here, before Claude is paid to evaluate it. The dropped locations are logged below.
+    off_region = []
+    def india_only(location: str) -> bool:
+        ok = is_india_location(location)
+        if not ok and len(off_region) < 300:
+            off_region.append(location)
+        return ok
+
+    collector = JobCollector(seen_urls=seen, max_per_company=2, location_ok=india_only)
 
     for name, fetch_fn in SOURCES:
         icon = SOURCE_ICONS.get(name, "🔔")
@@ -83,6 +93,9 @@ def main() -> None:
     all_jobs = collector.jobs
     print(f"\n{'='*55}")
     print(f"  Collected: {collector.summary()}")
+    if off_region:
+        sample = sorted(set(off_region))[:12]
+        print(f"  Not India, skipped ({len(off_region)}): " + " | ".join(sample) + (" ..." if len(set(off_region)) > 12 else ""))
     print(f"  Total: {len(all_jobs)} jobs  |  Evaluating with Claude AI...")
     print(f"{'='*55}\n")
 

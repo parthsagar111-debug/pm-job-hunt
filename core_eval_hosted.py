@@ -691,6 +691,63 @@ def job_fingerprint(company: str, title: str, location: str) -> str:
     return f"{_norm(company)}|{_norm(title)}|{location_country(location)}"
 
 
+# ─────────────────────────────────────────────
+# INDIA FILTER — for the India feed
+# ─────────────────────────────────────────────
+# LinkedIn's "location=India" search pads a thin result page with worldwide listings: the
+# 2026-09-23 23:39 run saved 55 jobs from Vietnam, Germany, France, Singapore, Canada... (7 of them
+# in Apply). The India feed had no location filter, so every one was evaluated by Claude and saved.
+# Indian listings say "..., India", or a state ("Karnataka"), or just a city ("Bengaluru",
+# "Mumbai Metropolitan Region", "Greater Delhi Area"), so all three count as India.
+_INDIA_PLACES = (
+    # states and union territories
+    "andhra pradesh", "arunachal pradesh", "assam", "bihar", "chhattisgarh", "goa", "gujarat", "haryana",
+    "himachal pradesh", "jharkhand", "karnataka", "kerala", "madhya pradesh", "maharashtra", "manipur",
+    "meghalaya", "mizoram", "nagaland", "odisha", "orissa", "rajasthan", "sikkim", "tamil nadu", "telangana",
+    "tripura", "uttar pradesh", "uttarakhand", "west bengal", "chandigarh", "puducherry", "pondicherry",
+    "jammu", "kashmir", "ladakh",
+    # metros and common job cities
+    "mumbai", "bombay", "navi mumbai", "thane", "delhi", "new delhi", "gurgaon", "gurugram", "noida",
+    "greater noida", "ghaziabad", "faridabad", "bengaluru", "bangalore", "hyderabad", "secunderabad",
+    "chennai", "madras", "kolkata", "calcutta", "pune", "pimpri", "chinchwad", "ahmedabad", "gandhinagar",
+    "surat", "vadodara", "baroda", "rajkot", "jaipur", "jodhpur", "udaipur", "lucknow", "kanpur",
+    "agra", "varanasi", "prayagraj", "allahabad", "meerut", "dehradun", "haridwar", "amritsar",
+    "ludhiana", "jalandhar", "mohali", "panchkula", "kochi", "cochin", "ernakulam", "thiruvananthapuram",
+    "trivandrum", "kozhikode", "calicut", "thrissur", "coimbatore", "madurai", "tiruchirappalli", "trichy",
+    "vellore", "mysuru", "mysore", "mangaluru", "mangalore", "hubli", "hubballi", "belagavi", "belgaum",
+    "visakhapatnam", "vizag", "vijayawada", "guntur", "tirupati", "warangal", "nagpur", "nashik",
+    "aurangabad", "kolhapur", "solapur", "indore", "bhopal", "gwalior", "jabalpur", "raipur", "bilaspur",
+    "bhubaneswar", "cuttack", "patna", "ranchi", "jamshedpur", "guwahati", "siliguri", "durgapur", "howrah",
+    "kharghar", "panvel", "vasai", "virar", "kalyan", "dombivli", "bhiwandi", "mira road", "andheri", "powai",
+    "malad",
+)
+_INDIA_PLACE_RE = re.compile(
+    r"(?<![a-z])(?:" + "|".join(re.escape(p) for p in sorted(set(_INDIA_PLACES), key=len, reverse=True)) + r")(?![a-z])")
+_INDIA_WORD_RE = re.compile(r"(?<![a-z])(?:india|bharat)(?![a-z])")
+# A country name vetoes a bare Indian-sounding place ("Hyderabad, Sindh, Pakistan"). Never applied
+# when the text says India.
+_NOT_INDIA_RE = re.compile(
+    r"(?<![a-z])(?:pakistan|bangladesh|sri lanka|nepal|bhutan|united states|usa|united kingdom|canada|"
+    r"australia|germany|france|singapore|malaysia|indonesia|vietnam|thailand|philippines|"
+    r"united arab emirates|uae|saudi arabia|qatar|kuwait|oman|bahrain)(?![a-z])")
+# Text that names no country at all: keep it rather than guess.
+_NO_COUNTRY = {"", "remote", "hybrid", "work from home", "wfh", "anywhere", "n/a", "na", "not specified",
+               "multiple locations", "pan india"}
+
+def is_india_location(location: str) -> bool:
+    """True for an India job, or one whose location names no country (kept, not guessed).
+    False only when the location names somewhere else: "Cologne, North Rhine-Westphalia, Germany",
+    "Ho Chi Minh City Metropolitan Area", "Dubai, Dubai, United Arab Emirates"."""
+    loc = " ".join((location or "").lower().replace("/", " / ").split())
+    if loc in _NO_COUNTRY:
+        return True
+    if _INDIA_WORD_RE.search(loc):
+        return True
+    if _NOT_INDIA_RE.search(loc):
+        return False
+    return bool(_INDIA_PLACE_RE.search(loc))
+
+
 class JobCollector:
     """Shared filter-and-dedup bookkeeping for a run.
 
