@@ -1,0 +1,45 @@
+name: TEMPORARY — classifier regression
+
+# Temporary, and deliberately not on main: it exists so scripts/eval_regression.py can
+# reach the secrets, which only exist inside Actions. workflow_dispatch would need the
+# file on the default branch, so this triggers on pushes to the working branch instead.
+# Parth will say when to delete it (we may re-run after tuning the prompt/thresholds).
+#
+# Read-only: the script reads the Sheet and calls the Claude API. It writes nothing back.
+#
+# This repository is PUBLIC, so these logs are public. The script prints job titles,
+# companies, decisions, feature JSON, token counts and cost — never the candidate
+# profile, never the prompt, never a secret.
+
+on:
+  push:
+    branches: [classifier-overhaul]
+
+# A second push while a run is in flight would double the API spend for the same answer.
+concurrency:
+  group: classifier-regression
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements_hosted.txt
+
+      - name: Run classifier regression (no Sheet writes)
+        env:
+          ANTHROPIC_API_KEY:           ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PM_EVAL_SPREADSHEET_ID:      ${{ secrets.PM_EVAL_SPREADSHEET_ID }}
+          CANDIDATE_PROFILE:           ${{ secrets.CANDIDATE_PROFILE }}
+          PYTHONUNBUFFERED:            '1'
+        run: python scripts/eval_regression.py

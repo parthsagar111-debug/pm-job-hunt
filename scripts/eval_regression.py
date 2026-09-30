@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from candidate_profile import load_candidate_profile
-from core_eval_hosted import extract_features
+from core_eval_hosted import TOKEN_USAGE, extract_features, usage_cost_usd
 from decision_rules import decide
 from sheets_writer import TAB_APPLY, TAB_MAYBE, TAB_SKIP, _get_client, _with_retry
 
@@ -95,6 +95,37 @@ def _evaluate(row: dict) -> tuple[str, dict, str]:
     return decision, features, prefix
 
 
+def _print_token_report(jobs_evaluated: int) -> None:
+    """Tokens and cost for the whole run. Prints counts only — never prompt text."""
+    u = TOKEN_USAGE
+    fresh = u.get("input_tokens", 0)
+    cache_write = u.get("cache_creation_input_tokens", 0)
+    cache_read = u.get("cache_read_input_tokens", 0)
+    output = u.get("output_tokens", 0)
+    total_input = fresh + cache_write + cache_read
+
+    print("\n" + "=" * 60)
+    print("  TOKENS AND COST")
+    print(f"{'=' * 60}")
+    print(f"  API calls              : {u.get('calls', 0)}")
+    print(f"  Input (uncached)       : {fresh:,}")
+    print(f"  Input (cache writes)   : {cache_write:,}   billed at 1.25x")
+    print(f"  Input (cache reads)    : {cache_read:,}   billed at 0.10x")
+    print(f"  Input total            : {total_input:,}")
+    print(f"  Output                 : {output:,}")
+    if jobs_evaluated:
+        print(f"  Avg input per job      : {total_input // jobs_evaluated:,}")
+        print(f"  Avg output per job     : {output // jobs_evaluated:,}")
+    print(f"  Cost                   : ${usage_cost_usd():.4f}")
+    if cache_read or cache_write:
+        # What the same run would have cost with every static token billed fresh.
+        from core_eval_hosted import PRICE_PER_MTOK
+        uncached = ((fresh + cache_write + cache_read) * PRICE_PER_MTOK["input"]
+                    + output * PRICE_PER_MTOK["output"]) / 1e6
+        print(f"  Cost without caching   : ${uncached:.4f}  "
+              f"(saved ${uncached - usage_cost_usd():.4f})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true",
@@ -125,7 +156,7 @@ def main() -> None:
             for row in found:
                 targets.append((expected_tab, row))
 
-    agreed = checked = 0
+    agreed = checked = agreed_with_old = 0
     misses = []
     for expected_tab, row in targets:
         title = (row.get("Title") or "")[:46]
@@ -141,6 +172,7 @@ def main() -> None:
         old_decision = row["_tab"]
         ok = new_decision == expected_tab
         agreed += ok
+        agreed_with_old += (new_decision == old_decision)
         flag = "ok  " if ok else "MISS"
         print(f"  {flag}  expected {expected_tab:<5} old {old_decision:<5} new {new_decision:<5} "
               f"| {company:<22} {title:<46} | jd={len(jd)}c | {prefix}{features.get('reason','')}")

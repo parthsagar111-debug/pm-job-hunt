@@ -16,6 +16,7 @@ Differences from local core_eval.py:
 import hashlib
 import random
 import re
+from collections import Counter
 from typing import Callable
 import requests
 import urllib.parse
@@ -1129,6 +1130,21 @@ def _load_api_key() -> str:
 
 
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
+# Haiku 4.5, USD per million tokens. Cache writes cost 1.25x base, reads 0.1x.
+PRICE_PER_MTOK = {"input": 1.0, "output": 5.0, "cache_write": 1.25, "cache_read": 0.10}
+
+# Accumulated across every claude_structured call in the process, so a run can be
+# costed without every caller threading usage back up.
+TOKEN_USAGE = Counter()
+
+
+def usage_cost_usd(usage: Counter | dict | None = None) -> float:
+    u = TOKEN_USAGE if usage is None else usage
+    return (u.get("input_tokens", 0) * PRICE_PER_MTOK["input"]
+            + u.get("output_tokens", 0) * PRICE_PER_MTOK["output"]
+            + u.get("cache_creation_input_tokens", 0) * PRICE_PER_MTOK["cache_write"]
+            + u.get("cache_read_input_tokens", 0) * PRICE_PER_MTOK["cache_read"]) / 1e6
 ANTHROPIC_URL   = "https://api.anthropic.com/v1/messages"
 
 class ClaudeSchemaError(RuntimeError):
@@ -1137,7 +1153,8 @@ class ClaudeSchemaError(RuntimeError):
 def claude_structured(prompt: str, tool_name: str, tool_description: str,
                       input_schema: dict, max_tokens: int = 300,
                       timeout: int = 30,
-                      temperature: float | None = None) -> tuple[dict, dict]:
+                      temperature: float | None = None,
+                      cached_prefix: str | None = None) -> tuple[dict, dict]:
     """
     Call Claude and get back a dict matching input_schema, via a forced tool call.
 
@@ -1151,12 +1168,29 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
     API default they were tuned against; the PM Eval feature call passes 0 so the
     same JD doesn't drift between tabs across runs.
 
-    Returns (tool input dict, usage dict).
+    cached_prefix marks the static part of the prompt (profile + definitions +
+    few-shots, ~3,300 tokens) with cache_control, so it is billed once per cache
+    window instead of once per job; `prompt` then carries only the per-job text.
+    Anything job-specific MUST stay in `prompt` — a JD inside the cached block would
+    change the prefix on every call and defeat the cache entirely. Default 5-minute
+    TTL. Haiku's minimum cacheable prefix is 2048 tokens, which the static block
+    clears; a shorter prefix is simply not cached and costs nothing extra.
+
+    Returns (tool input dict, usage dict). Usage is also accumulated into
+    TOKEN_USAGE so a whole run can be costed without threading it through callers.
     """
+    if cached_prefix:
+        content = [
+            {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": prompt},
+        ]
+    else:
+        content = prompt
+
     body = {
         "model":       ANTHROPIC_MODEL,
         "max_tokens":  max_tokens,
-        "messages":    [{"role": "user", "content": prompt}],
+        "messages":    [{"role": "user", "content": content}],
     }
     if temperature is not None:
         body["temperature"] = temperature
@@ -1175,6 +1209,12 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
     )
     resp.raise_for_status()
     data = resp.json()
+
+    usage = data.get("usage", {}) or {}
+    TOKEN_USAGE["calls"] += 1
+    for field in ("input_tokens", "output_tokens",
+                  "cache_creation_input_tokens", "cache_read_input_tokens"):
+        TOKEN_USAGE[field] += usage.get(field, 0) or 0
 
     block = next((b for b in data.get("content", [])
                   if b.get("type") == "tool_use" and b.get("name") == tool_name), None)
@@ -1372,7 +1412,10 @@ def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
         )
 
     payload, _usage = claude_structured(
-        build_feature_prompt() + "\n\n" + "\n".join(context_lines),
+        "\n".join(context_lines),
+        # Everything static (profile + definitions + few-shots) is cached; only the
+        # per-job lines above vary, so the prefix stays byte-identical across jobs.
+        cached_prefix=build_feature_prompt(),
         tool_name="record_features",
         tool_description="Record the extracted facts about this job listing.",
         input_schema=FEATURES_TOOL_SCHEMA,

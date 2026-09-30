@@ -204,3 +204,87 @@ def test_only_the_first_1500_chars_matter():
     a = core.job_content_key("PM", "ACME", head + "tail A")
     b = core.job_content_key("PM", "ACME", head + "tail B")
     assert a == b
+
+
+# ── prompt caching
+def _capture_request(monkeypatch):
+    """Returns a dict that fills with the JSON body of the next API call.
+    Offline: the key is a stub and requests.post is replaced."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    captured = {}
+
+    class R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"content": [{"type": "tool_use", "name": "record_features",
+                                 "input": _valid_payload()}],
+                    "usage": {"input_tokens": 120, "output_tokens": 40,
+                              "cache_creation_input_tokens": 3300,
+                              "cache_read_input_tokens": 0}}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured.update(json or {})
+        return R()
+
+    monkeypatch.setattr(core.requests, "post", fake_post)
+    return captured
+
+
+def test_static_prefix_is_marked_for_caching(monkeypatch):
+    monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
+    captured = _capture_request(monkeypatch)
+    core.extract_features({"title": "Senior Product Manager", "company": "ACME",
+                           "location": "Mumbai", "source": "Naukri"},
+                          jd_text="Own the checkout funnel. " * 60)
+
+    blocks = captured["messages"][0]["content"]
+    assert isinstance(blocks, list) and len(blocks) == 2
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in blocks[1]
+
+
+def test_jd_stays_outside_the_cached_block(monkeypatch):
+    """A JD inside the cached prefix would change it every call and defeat the cache."""
+    monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
+    captured = _capture_request(monkeypatch)
+    jd = "UNIQUE-JD-MARKER. Own the checkout funnel. " * 60
+    core.extract_features({"title": "PM", "company": "ACME", "location": "Mumbai",
+                           "source": "Naukri"}, jd_text=jd)
+
+    cached, dynamic = captured["messages"][0]["content"]
+    assert "UNIQUE-JD-MARKER" not in cached["text"]
+    assert "UNIQUE-JD-MARKER" in dynamic["text"]
+    assert "ACME" not in cached["text"]          # nothing job-specific in the prefix
+    assert "PROFILE" in cached["text"]           # the static part is what gets cached
+
+
+def test_cached_prefix_is_identical_across_jobs(monkeypatch):
+    monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
+    prefixes = []
+    for company in ("ACME", "Globex"):
+        captured = _capture_request(monkeypatch)
+        core.extract_features({"title": "PM", "company": company, "location": "Mumbai",
+                               "source": "Naukri"}, jd_text="Own checkout. " * 60)
+        prefixes.append(captured["messages"][0]["content"][0]["text"])
+    assert prefixes[0] == prefixes[1]
+
+
+def test_usage_including_cache_tokens_is_accumulated(monkeypatch):
+    monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
+    core.TOKEN_USAGE.clear()
+    _capture_request(monkeypatch)
+    core.extract_features({"title": "PM", "company": "ACME", "location": "Mumbai",
+                           "source": "Naukri"}, jd_text="Own checkout. " * 60)
+    assert core.TOKEN_USAGE["calls"] == 1
+    assert core.TOKEN_USAGE["cache_creation_input_tokens"] == 3300
+    assert core.usage_cost_usd() > 0
+    core.TOKEN_USAGE.clear()
+
+
+def test_callers_without_a_cached_prefix_send_a_plain_string(monkeypatch):
+    """Gulf and Global keep the exact request shape they were tuned against."""
+    captured = _capture_request(monkeypatch)
+    core.claude_structured("plain prompt", "record_features", "d",
+                           core.FEATURES_TOOL_SCHEMA)
+    assert captured["messages"][0]["content"] == "plain prompt"
