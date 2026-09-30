@@ -13,6 +13,7 @@ Differences from local core_eval.py:
 - Selenium stays for Naukri/Hirist/IIMJobs (works headless on Ubuntu CI)
 """
 
+import hashlib
 import random
 import re
 from typing import Callable
@@ -80,11 +81,43 @@ PM_KEYWORDS = [
 ]
 
 def is_pm_role(title: str) -> bool:
+    """The ORIGINAL substring gate. Still used by _parse_li_cards, so the Gulf and
+    Global feeds keep exactly the behaviour they were tuned against — Parth's call
+    when the PM Eval gate was tightened. Do not narrow this one."""
     t = title.lower().strip()
     if any(kw in t for kw in PM_KEYWORDS): return True
     if t.startswith(("pm ", "pm-", "pm,", "pmm ", "bdm ")): return True
     if t in ("pm", "pmm", "bdm"): return True
     return False
+
+
+# ── PM Eval only: word boundaries, and no sales/category titles.
+# The substring version above matches "apm" inside ordinary words and admitted
+# BDM/category roles that are not product jobs at all — each one cost a JD fetch
+# and an API call before being thrown away. Junior titles still pass: decide()
+# rule 4 skips them, so they stay visible as Skip rows rather than vanishing.
+PM_EVAL_TITLE_KEYWORDS = [
+    "product manager", "product management",
+    "senior pm", "associate pm", "apm", "group pm", "principal pm",
+    "staff pm", "lead pm", "director of product", "vp of product",
+    "head of product", "chief product", "product lead", "product owner",
+    "growth pm", "technical pm", "platform pm", "pm", "pmm",
+    "d2c manager", "growth manager", "head of growth", "growth marketing",
+    "head of e-commerce", "ecommerce manager", "e-commerce manager",
+    "product marketing manager",
+    "strategy manager", "head of strategy",
+]
+
+# Dropped vs PM_KEYWORDS: "business development manager", "bdm", "category manager",
+# "category head" — sales and merchandising titles, not product roles.
+_PM_EVAL_TITLE_RE = re.compile(
+    r"(?<![a-z])(" + "|".join(re.escape(kw) for kw in PM_EVAL_TITLE_KEYWORDS) + r")(?![a-z])",
+    re.I,
+)
+
+def is_pm_eval_role(title: str) -> bool:
+    """Word-boundary title gate for the India PM Eval feed only."""
+    return bool(_PM_EVAL_TITLE_RE.search((title or "").strip()))
 
 # ─────────────────────────────────────────────
 # TIME HELPERS
@@ -369,6 +402,37 @@ def fetch_linkedin(keyword: str = SEARCH_KEYWORD, time_range: str = "24h",
     print(f"  [LinkedIn] {len(unique)} found{scanned} → top {len(jobs)}")
     return jobs
 
+# Naukri's card markup sometimes puts the experience range where the company name
+# belongs ("6 - 12 yrs"), and the real company is lost. Left alone, the classifier
+# is told the employer is "6 - 12 yrs" and the years range never reaches it.
+_NAUKRI_EXPERIENCE_ONLY = re.compile(r"^\d+\s*-\s*\d+\s*yrs?\.?$", re.I)
+
+def _split_naukri_company(company: str, card) -> tuple[str, str]:
+    """(company, stated_experience) — recovers the company when the scrape put an
+    experience range in its place. Returns "Unknown" if it can't be recovered, which
+    is honest and visible in the sheet, rather than a range masquerading as a name."""
+    text = (company or "").strip()
+    if not _NAUKRI_EXPERIENCE_ONLY.match(text):
+        return text or "N/A", ""
+
+    recovered = ""
+    try:
+        # The company usually also appears as a subtitle/company link elsewhere on
+        # the card; take the first candidate that isn't another experience range.
+        for el in card.find_all(["a", "span", "div"]):
+            cls = " ".join(el.get("class") or []).lower()
+            if not any(k in cls for k in ("comp-name", "company", "subtitle", "org")):
+                continue
+            candidate = el.get_text(strip=True)
+            if candidate and not _NAUKRI_EXPERIENCE_ONLY.match(candidate) and len(candidate) < 80:
+                recovered = candidate
+                break
+    except Exception:
+        pass
+
+    return (recovered or "Unknown"), text
+
+
 def fetch_naukri(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list[dict]:
     age_param = "1" if time_range == "24h" else "7"
     slug = keyword.lower().replace(" ", "-")
@@ -405,11 +469,13 @@ def fetch_naukri(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list
                 pt = (card.find("span", class_=lambda c: "job-post-day" in (c or "")) or
                       card.find("span", title=lambda t: t and "Posted" in (t or "")))
                 posted = pt.get_text(strip=True) if pt else "Recent"
+                company, stated_experience = _split_naukri_company(company, card)
                 hits.append({
                     "source": "Naukri",
                     "job_id": "nk_" + job_url.rstrip("/").split("/")[-1].split("?")[0],
                     "title": title, "company": company, "location": location,
                     "posted": posted, "posted_dt": "", "experience": "—", "url": job_url,
+                    "stated_experience": stated_experience,
                 })
             except: continue
     except Exception as e: print(f"  [Naukri] ERROR: {e}")
@@ -791,6 +857,33 @@ def fetch_jd_guest(job_id_or_url: str) -> str:
     return el.get_text("\n", strip=True) if el else ""
 
 
+# A JD shorter than this can't carry responsibilities and requirements — it's a
+# stub, a paywall, or a fragment of chrome.
+MIN_JD_CHARS = 300
+
+# Category navigation that IIMJobs/Hirist render on every page. When the old
+# largest-<div> fallback fired, this is what it returned as the "job description".
+_JD_MENU_SIGNATURES = (
+    "banking & financefinance & accounts",
+    "finance & accountsbanking",
+    "it & systemssales & marketing",
+    "sales & marketingit & systems",
+)
+
+def is_garbage_jd(text: str) -> bool:
+    """True when the text isn't a job description.
+
+    Deliberately NOT checking for sentence punctuation: plenty of real Naukri JDs
+    are bullet lists with no full stops, and rejecting those would throw away good
+    jobs (Parth's call, 2026-09-30). Length and the known menu signatures are enough.
+    """
+    stripped = (text or "").strip()
+    if len(stripped) < MIN_JD_CHARS:
+        return True
+    squashed = re.sub(r"\s+", "", stripped).lower()
+    return any(sig.replace(" ", "") in squashed for sig in _JD_MENU_SIGNATURES)
+
+
 def fetch_jd_text(job: dict) -> str:
     """Fetch and extract the full job description text from the job URL.
 
@@ -859,15 +952,12 @@ def fetch_jd_text(job: dict) -> str:
                                 return txt[:4000]
                     except: pass
 
-                # Fallback: largest meaningful text block
-                candidates = []
-                for tag in soup.find_all(["div", "section"]):
-                    txt = tag.get_text(strip=True)
-                    if 200 < len(txt) < 8000:
-                        candidates.append(txt)
-                if candidates:
-                    return max(candidates, key=len)[:4000]
-
+                # The largest-<div> fallback that used to live here is GONE (2026-09-30).
+                # When no JD selector matched it returned the biggest text block on the
+                # page, which on IIMJobs/Hirist is the category nav ("Banking & Finance
+                # Finance & Accounts…"). That was then classified as if it were the job
+                # description. Returning nothing is honest: the caller routes a JD-less
+                # job down the UNVERIFIED path instead of inventing a decision from a menu.
                 page_title = (soup.title.string.strip() if soup.title and soup.title.string else "")
                 print(f"  ⚠️  JD fetch ({source}): page loaded but no JD text matched — "
                       f"page title: {page_title!r}, landed at: {driver.current_url!r}")
@@ -891,37 +981,130 @@ def fetch_jd_text(job: dict) -> str:
 # ─────────────────────────────────────────────
 # CLAUDE AI EVALUATOR
 # ─────────────────────────────────────────────
-EVAL_PROMPT = """You are a recruiter evaluating job listings for a candidate.
-Give an Apply / Maybe / Skip decision with a one-line reason.
+# The old EVAL_PROMPT asked the model for a decision, carried a hardcoded profile
+# (which omitted most of Parth's experience, so the model invented gaps that were
+# simply false), and shipped a ~20/35/45 distribution quota plus two "when in doubt
+# pick Maybe" lines. An audit of 461 rows found 81 in the wrong tab.
+#
+# It now extracts FEATURES only. decision_rules.decide() applies the policy, so the
+# same JD produces the same tab every time. The profile comes from the
+# CANDIDATE_PROFILE secret — never hardcoded, never logged (this repo is public).
+FEATURE_PROMPT_TEMPLATE = """You are extracting structured facts about a job listing for a
+Senior Product Manager (9+ years) job-hunting in India. You do NOT decide whether to apply —
+separate code does that from the fields you return. Report only what the listing supports.
 
-Use this distribution as a rough guide: ~20% Apply, ~35% Maybe, ~45% Skip.
-When in doubt between Apply and Maybe, pick Maybe. When in doubt between Maybe and Skip, pick Maybe.
-Only Skip when there is a clear disqualifying reason.
+CANDIDATE PROFILE
+{profile}
 
-Candidate Profile:
-- Title: Senior Product Manager, 9+ years experience
-- Domain: B2C consumer internet, D2C e-commerce, health & wellness, fintech, food-tech
-- Strengths: Funnel optimisation, A/B experimentation, AI-powered personalisation,
-  lifecycle engagement, retention, monetisation, SQL, Mixpanel, WebEngage, MoEngage
-- Education: MBA (Chetana Institute), BMS Marketing — no CS/B.Tech degree
-- Location: Mumbai, open to relocation within India
+DEFINITIONS
 
-Apply if: title and seniority match, domain overlaps even partially, no hard blockers.
-Maybe if: title fits but domain is unfamiliar, or seniority is off but role is interesting —
-this includes cases where the role's stated experience range is lower than the candidate's
-9+ years (e.g. a listing wants 2-5 years) or higher. A numeric experience-range mismatch by
-itself is NEVER a Skip — it belongs in Maybe.
+domain_class:
+- core: consumer or B2B commerce, marketplaces, D2C, quick-commerce, payments/checkout,
+  consumer fintech & lending, growth/CRO/retention/lifecycle roles in ANY consumer app,
+  search/recs/personalization, health & wellness e-commerce, food-tech, consumer AI products.
+- adjacent: general B2B SaaS, HR-tech, ed-tech, travel, adtech/martech, insurance, banking
+  digital (non-ops), gaming, data/analytics platforms, internal tools.
+- non_core: everything else.
 
-Hard Skip ONLY if:
-1. Explicitly requires B.Tech/CS degree (not just "preferred")
-2. Role title itself is explicitly junior — "Associate Product Manager" or "APM" in the title
-   (title-based signal only; a numeric years-of-experience range alone does not qualify, see Maybe above)
-3. Domain is purely supply chain, warehouse ops, or clinical healthcare with no consumer product angle
-4. Role title is completely unrelated — project coordinator, account manager, program manager
-5. Clearly requires deep expertise in a domain with zero overlap (e.g. semiconductors, defence)
+hard_blockers — include one ONLY if the JD EXPLICITLY requires it. "Preferred", "nice to
+have", "a plus" is never a blocker. Allowed values:
+- mandatory_cs_or_engineering_degree (includes "IIT/NIT/BITS required")
+- other_mandatory_degree (MBBS, B.Pharm, CA)
+- deep_infra_security_networking
+- clinical_or_payer_healthcare_ops
+- post_trade_aml_compliance_accounting
+- manufacturing_erp_industrial
+- specialist_hardware (semiconductors, mining, energy/grid, medical devices, drones)
+- pure_supply_chain_logistics_saas
+- mandatory_platform_certification (hands-on SFMC, ServiceNow, Workday, SAP, Oracle HCM required)
+A supply-chain or ops role INSIDE a consumer e-commerce company is NOT a blocker — that is adjacent.
 
-Record your answer with the record_decision tool: decision (Apply / Maybe / Skip),
-reason (max 15 words), gap (biggest gap, or "None")."""
+years_min / years_max — fill ONLY from numbers explicitly stated in the JD text or the
+"Stated Experience" field. If the listing states no numbers, return null for BOTH. Never infer
+years from the title, from seniority wording, or from company stage. "5+ years" means
+years_min 5 and years_max null. "3-6 years" means years_min 3 and years_max 6.
+
+is_pm_role — false for product marketing (PMM), business analyst, scrum master, project or
+program manager, category manager, business development, account management, engineering and
+analyst titles, even when the listing calls them "product".
+
+jd_quality — "garbage" if the text is a site navigation/category menu or is unrelated to the
+role; "thin" if it has no responsibilities and no requirements; otherwise "ok".
+
+fit_score — 0-100, how well the CANDIDATE PROFILE above matches this role, judged as if the
+blockers did not exist (the code applies those separately).
+
+gap — must name something genuinely absent from the candidate profile above. Never invent a
+gap the profile already contradicts. "None" if there is no real gap.
+
+EXAMPLES
+
+Input: Snapmint — "Senior Product Manager - Search" | 5-8 yrs | e-commerce search relevance,
+ranking, and BNPL checkout funnel.
+Output: {{"is_pm_role": true, "title_level": "senior", "years_min": 5, "years_max": 8,
+"domain_class": "core", "hard_blockers": [], "requires_managing_pms": null,
+"stated_max_ctc_lpa": null, "jd_quality": "ok", "fit_score": 85,
+"reason": "E-commerce search and BNPL checkout match directly", "gap": "None"}}
+
+Input: Wrike — "Senior Product Manager (Platform & AI)" | 4+ years hands-on B2B SaaS platform
+and AI features for enterprise collaboration.
+Output: {{"is_pm_role": true, "title_level": "senior", "years_min": 4, "years_max": null,
+"domain_class": "adjacent", "hard_blockers": [], "requires_managing_pms": null,
+"stated_max_ctc_lpa": null, "jd_quality": "ok", "fit_score": 55,
+"reason": "Strong PM craft, but enterprise B2B SaaS is unfamiliar", "gap": "Enterprise SaaS platform ownership"}}
+
+Input: Cohesity — "Senior Product Manager" | enterprise storage, distributed filesystems,
+backup infrastructure; CS degree required.
+Output: {{"is_pm_role": true, "title_level": "senior", "years_min": null, "years_max": null,
+"domain_class": "non_core", "hard_blockers": ["deep_infra_security_networking",
+"mandatory_cs_or_engineering_degree"], "requires_managing_pms": null,
+"stated_max_ctc_lpa": null, "jd_quality": "ok", "fit_score": 20,
+"reason": "Storage infrastructure product, no consumer overlap", "gap": "Distributed systems depth"}}
+
+Record your answer with the record_features tool."""
+
+FEATURES_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_pm_role":     {"type": "boolean",
+                           "description": "True only for genuine product-manager roles."},
+        "title_level":    {"type": "string",
+                           "enum": ["intern", "apm", "pm", "senior", "lead_principal",
+                                    "group_director", "vp_plus"]},
+        "years_min":      {"type": ["integer", "null"],
+                           "description": "Only if explicitly stated; else null."},
+        "years_max":      {"type": ["integer", "null"],
+                           "description": "Only if explicitly stated; else null."},
+        "domain_class":   {"type": "string", "enum": ["core", "adjacent", "non_core"]},
+        "hard_blockers":  {"type": "array", "items": {"type": "string"},
+                           "description": "Only explicitly required blockers, never 'preferred'."},
+        "requires_managing_pms": {"type": ["integer", "null"],
+                                  "description": "Number of PMs to manage, if stated."},
+        "stated_max_ctc_lpa":    {"type": ["number", "null"],
+                                  "description": "Top of the stated CTC range in LPA, if stated."},
+        "jd_quality":     {"type": "string", "enum": ["ok", "thin", "garbage"]},
+        "fit_score":      {"type": "integer", "description": "0-100 fit, ignoring blockers."},
+        "reason":         {"type": "string", "description": "Max 15 words."},
+        "gap":            {"type": "string", "description": "Max 12 words, or 'None'."},
+    },
+    "required": ["is_pm_role", "title_level", "years_min", "years_max", "domain_class",
+                 "hard_blockers", "requires_managing_pms", "stated_max_ctc_lpa",
+                 "jd_quality", "fit_score", "reason", "gap"],
+}
+
+VALID_BLOCKERS = {
+    "mandatory_cs_or_engineering_degree", "other_mandatory_degree",
+    "deep_infra_security_networking", "clinical_or_payer_healthcare_ops",
+    "post_trade_aml_compliance_accounting", "manufacturing_erp_industrial",
+    "specialist_hardware", "pure_supply_chain_logistics_saas",
+    "mandatory_platform_certification",
+}
+
+
+def build_feature_prompt() -> str:
+    """Profile + definitions + few-shots. Never log the result — it embeds the profile."""
+    from candidate_profile import load_candidate_profile
+    return FEATURE_PROMPT_TEMPLATE.format(profile=load_candidate_profile())
 
 
 def _load_api_key() -> str:
@@ -953,7 +1136,8 @@ class ClaudeSchemaError(RuntimeError):
 
 def claude_structured(prompt: str, tool_name: str, tool_description: str,
                       input_schema: dict, max_tokens: int = 300,
-                      timeout: int = 30) -> tuple[dict, dict]:
+                      timeout: int = 30,
+                      temperature: float | None = None) -> tuple[dict, dict]:
     """
     Call Claude and get back a dict matching input_schema, via a forced tool call.
 
@@ -963,16 +1147,26 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
     to Skip on a malformed reply, and since Skip is written to the Sheet and
     deduped forever, one bad response silently blackholed a job for good.
 
+    temperature is only sent when given, so existing callers (Gulf, Global) keep the
+    API default they were tuned against; the PM Eval feature call passes 0 so the
+    same JD doesn't drift between tabs across runs.
+
     Returns (tool input dict, usage dict).
     """
+    body = {
+        "model":       ANTHROPIC_MODEL,
+        "max_tokens":  max_tokens,
+        "messages":    [{"role": "user", "content": prompt}],
+    }
+    if temperature is not None:
+        body["temperature"] = temperature
+
     resp = requests.post(
         ANTHROPIC_URL,
         headers={"Content-Type": "application/json", "x-api-key": _load_api_key(),
                  "anthropic-version": "2023-06-01"},
         json={
-            "model":       ANTHROPIC_MODEL,
-            "max_tokens":  max_tokens,
-            "messages":    [{"role": "user", "content": prompt}],
+            **body,
             "tools":       [{"name": tool_name, "description": tool_description,
                              "input_schema": input_schema}],
             "tool_choice": {"type": "tool", "name": tool_name},
@@ -1012,9 +1206,16 @@ EVAL_TOOL_SCHEMA = {
     "required": ["decision", "reason", "gap"],
 }
 
-def evaluate_job(job: dict, prompt_template: str | None = None) -> dict:
-    """Fetch full JD then call Claude API to evaluate. Returns dict with decision/reason/gap/jd.
-    prompt_template defaults to EVAL_PROMPT (India); the Gulf feed passes its own."""
+def evaluate_job(job: dict, prompt_template: str) -> dict:
+    """Fetch full JD then ask Claude for the decision directly. Returns decision/reason/gap/jd.
+
+    This is the decision-style path, now used by the GULF feed only — it passes
+    GULF_EVAL_PROMPT. The India PM Eval feed extracts features instead and decides in
+    code (see evaluate_job_features / decision_rules.decide), which is why there is no
+    default prompt here any more."""
+    if not prompt_template:
+        raise ValueError("evaluate_job needs an explicit prompt_template "
+                         "(PM Eval uses evaluate_job_features instead)")
     title    = job.get("title", "")
     company  = job.get("company", "")
     location = job.get("location", "")
@@ -1063,9 +1264,164 @@ def evaluate_job(job: dict, prompt_template: str | None = None) -> dict:
         return {"decision": "Error", "reason": f"Evaluation failed: {e}", "gap": "—", "jd": jd_text}
 
 
+def _validate_features(payload: dict) -> dict:
+    """Coerce and sanity-check the extracted features. Raises ClaudeSchemaError on
+    anything unusable, so the caller records an Error and retries next run rather
+    than deciding from a half-parsed reply."""
+    out = dict(payload)
+
+    for field in ("years_min", "years_max", "requires_managing_pms"):
+        value = out.get(field)
+        if value in ("", "null", "None"):
+            value = None
+        if value is not None:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                raise ClaudeSchemaError(f"{field}={out.get(field)!r} is not an integer or null")
+            if value < 0 or value > 60:
+                raise ClaudeSchemaError(f"{field}={value} is out of range")
+        out[field] = value
+
+    ctc = out.get("stated_max_ctc_lpa")
+    if ctc in ("", "null", "None"):
+        ctc = None
+    if ctc is not None:
+        try:
+            ctc = float(ctc)
+        except (TypeError, ValueError):
+            raise ClaudeSchemaError(f"stated_max_ctc_lpa={out.get('stated_max_ctc_lpa')!r} is not a number")
+    out["stated_max_ctc_lpa"] = ctc
+
+    try:
+        fit = int(out.get("fit_score"))
+    except (TypeError, ValueError):
+        raise ClaudeSchemaError(f"fit_score={out.get('fit_score')!r} is not an integer")
+    if not 0 <= fit <= 100:
+        raise ClaudeSchemaError(f"fit_score={fit} is outside 0-100")
+    out["fit_score"] = fit
+
+    if not isinstance(out.get("is_pm_role"), bool):
+        raise ClaudeSchemaError(f"is_pm_role={out.get('is_pm_role')!r} is not a boolean")
+
+    blockers = out.get("hard_blockers") or []
+    if not isinstance(blockers, list):
+        raise ClaudeSchemaError("hard_blockers is not a list")
+    # An invented blocker would silently Skip a good job, so drop unknown values
+    # rather than trusting them — and say so in the log.
+    unknown = [b for b in blockers if b not in VALID_BLOCKERS]
+    if unknown:
+        print(f"      (ignoring unrecognised blocker(s): {unknown})")
+    out["hard_blockers"] = [b for b in blockers if b in VALID_BLOCKERS]
+
+    return out
+
+
+JOB_KEY_JD_CHARS = 1500
+
+def job_content_key(title: str, company: str, jd_text: str) -> str:
+    """sha1(normalised title + company + first 1500 chars of JD).
+
+    Second dedup key alongside URL: a posting re-listed under a new id gets a new
+    URL but keeps its text. Deliberately includes the JD — a company+title-only key
+    was tried on 2026-09-18 and dropped 168 genuinely new jobs in one run, because
+    large employers repost the same title constantly. Requiring the text to match
+    too makes a collision mean "the same posting", not "the same role".
+
+    Returns "" when there's no JD, so JD-less rows never collide with each other.
+    """
+    jd = (jd_text or "").strip()
+    if not jd:
+        return ""
+    basis = "|".join((
+        " ".join((title or "").lower().split()),
+        " ".join((company or "").lower().split()),
+        " ".join(jd[:JOB_KEY_JD_CHARS].lower().split()),
+    ))
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()
+
+
+def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
+    """(features, jd_text) for one job. Raises on any API/schema failure.
+
+    Pass jd_text when it has already been fetched (the caller dedups on its content
+    key first, so a repost costs a JD fetch but not an API call).
+
+    The local is_garbage_jd() check overrides the model: if we can see the text is a
+    category menu or a stub, that is not a judgment call.
+    """
+    if jd_text is None:
+        jd_text = fetch_jd_text(job)
+    stated_experience = job.get("stated_experience", "")
+
+    context_lines = [
+        f"Job Title: {job.get('title', '')}",
+        f"Company: {job.get('company', '')}",
+        f"Location: {job.get('location', '')}",
+        f"Source: {job.get('source', '')}",
+    ]
+    if stated_experience:
+        context_lines.append(f"Stated Experience: {stated_experience}")
+
+    if jd_text and not is_garbage_jd(jd_text):
+        context_lines.append("\nFull Job Description:\n" + jd_text)
+    else:
+        context_lines.append(
+            "\n(No usable job description was retrieved — set jd_quality to "
+            '"garbage" and judge nothing else from its absence.)'
+        )
+
+    payload, _usage = claude_structured(
+        build_feature_prompt() + "\n\n" + "\n".join(context_lines),
+        tool_name="record_features",
+        tool_description="Record the extracted facts about this job listing.",
+        input_schema=FEATURES_TOOL_SCHEMA,
+        max_tokens=400,
+        temperature=0,
+    )
+    features = _validate_features(payload)
+
+    # Local evidence wins: the model can't talk us out of what we can measure.
+    if not jd_text or is_garbage_jd(jd_text):
+        features["jd_quality"] = "garbage"
+
+    return features, jd_text
+
+
+def evaluate_job_features(job: dict, decider, seen_job_keys: set | None = None) -> dict:
+    """Feature extraction + the code-side decision, in the shape save_eval_jobs wants.
+
+    Decision "Duplicate" means the JD text matches a posting already in the Sheet
+    under a different URL — dropped before the API call, and never written.
+    """
+    try:
+        jd_text = fetch_jd_text(job)
+        if seen_job_keys:
+            key = job_content_key(job.get("title", ""), job.get("company", ""), jd_text)
+            if key and key in seen_job_keys:
+                return {"decision": "Duplicate", "reason": "Same posting text already in the Sheet",
+                        "gap": "—", "jd": jd_text, "features": {}}
+        features, jd_text = extract_features(job, jd_text)
+    except Exception as e:
+        print(f"    ⚠️  Feature extraction failed: {type(e).__name__}: {e}")
+        # Error, never Skip: an Error row is filtered out before writing and retried.
+        return {"decision": "Error", "reason": f"Evaluation failed: {e}", "gap": "—",
+                "jd": "", "features": {}}
+
+    decision, prefix = decider(features)
+    return {
+        "decision": decision,
+        "reason":   (prefix + (features.get("reason") or "")).strip(),
+        "gap":      features.get("gap") or "None",
+        "jd":       jd_text,
+        "features": features,
+    }
+
+
 CONSECUTIVE_ERROR_LIMIT = 3  # abort early if the API is clearly down (bad key, no funds, outage)
 
-def evaluate_batch(jobs: list[dict], prompt_template: str | None = None) -> tuple[list[dict], bool]:
+def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
+                   decider=None, seen_job_keys: set | None = None) -> tuple[list[dict], bool]:
     """
     Returns (evaluated_jobs, aborted).
     evaluated_jobs only contains jobs that got a real decision — jobs whose API
@@ -1073,6 +1429,9 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None) -> tupl
     Sheet and aren't marked as seen; they'll simply be re-fetched and retried next
     run. If several calls in a row fail, we stop early instead of burning through
     the whole batch against a dead key/empty balance.
+
+    With `decider` (PM Eval), the model extracts features and that callable decides.
+    Without it (Gulf), the model returns the decision itself, unchanged.
     """
     total = len(jobs)
     ok_jobs = []
@@ -1082,10 +1441,23 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None) -> tupl
         company = job.get("company", "")
         icon    = SOURCE_ICONS.get(job.get("source", ""), "🔔")
         print(f"  [{i}/{total}] {icon} 📄 {title} @ {company}...", end=" ", flush=True)
-        ev    = evaluate_job(job, prompt_template)
+        ev = (evaluate_job_features(job, decider, seen_job_keys) if decider
+              else evaluate_job(job, prompt_template))
         job["evaluation"] = ev
         badge = {"Apply": "✅", "Maybe": "🤔", "Skip": "❌", "Error": "⚠️"}.get(ev["decision"], "—")
         print(f"{badge} {ev['decision']}  |  {ev['reason']}")
+        if ev.get("features"):
+            # Per-job features are safe to log (no profile text) and make a wrong
+            # tab traceable to the field that caused it.
+            f = ev["features"]
+            print(f"      features: pm={f.get('is_pm_role')} level={f.get('title_level')} "
+                  f"yrs={f.get('years_min')}-{f.get('years_max')} domain={f.get('domain_class')} "
+                  f"fit={f.get('fit_score')} jd={f.get('jd_quality')} "
+                  f"blockers={f.get('hard_blockers')}")
+
+        if ev["decision"] == "Duplicate":
+            # Not an error and not a result — the same posting is already recorded.
+            continue
 
         if ev["decision"] == "Error":
             consecutive_errors += 1

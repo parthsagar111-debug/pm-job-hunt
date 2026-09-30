@@ -24,6 +24,10 @@ class FakeResponse:
         return self._payload
 
 
+# evaluate_job is the Gulf-style path now: the caller always supplies the prompt.
+STUB_PROMPT = "Decide Apply/Maybe/Skip for this listing."
+
+
 def _tool_use(name, tool_input):
     return {"content": [{"type": "tool_use", "name": name, "input": tool_input}],
             "stop_reason": "tool_use", "usage": {"input_tokens": 10, "output_tokens": 5}}
@@ -74,7 +78,9 @@ def test_malformed_reply_becomes_error_not_skip(monkeypatch):
     monkeypatch.setattr(core.requests, "post", lambda *a, **k: FakeResponse(
         {"content": [{"type": "text", "text": "I think you should apply!"}],
          "stop_reason": "end_turn"}))
-    result = core.evaluate_job({"title": "PM", "company": "X", "location": "Mumbai", "source": "LinkedIn"})
+    result = core.evaluate_job(
+        {"title": "PM", "company": "X", "location": "Mumbai", "source": "LinkedIn"},
+        STUB_PROMPT)
     assert result["decision"] == "Error"
     assert result["jd"] == "some jd text"   # JD preserved for the retry
 
@@ -84,14 +90,17 @@ def test_api_failure_becomes_error(monkeypatch):
     def boom(*a, **k):
         raise ConnectionError("network down")
     monkeypatch.setattr(core.requests, "post", boom)
-    assert core.evaluate_job({"title": "PM", "company": "X", "location": "", "source": "LinkedIn"})["decision"] == "Error"
+    assert core.evaluate_job(
+        {"title": "PM", "company": "X", "location": "", "source": "LinkedIn"},
+        STUB_PROMPT)["decision"] == "Error"
 
 
 def test_good_reply_passes_through(monkeypatch):
     monkeypatch.setattr(core, "fetch_jd_text", lambda job: "jd")
     monkeypatch.setattr(core.requests, "post", lambda *a, **k: FakeResponse(
         _tool_use("record_decision", {"decision": "Maybe", "reason": "domain gap", "gap": "fintech"})))
-    result = core.evaluate_job({"title": "PM", "company": "X", "location": "", "source": "LinkedIn"})
+    result = core.evaluate_job(
+        {"title": "PM", "company": "X", "location": "", "source": "LinkedIn"}, STUB_PROMPT)
     assert (result["decision"], result["reason"], result["gap"]) == ("Maybe", "domain gap", "fintech")
 
 

@@ -26,13 +26,36 @@ from core_eval_hosted import (
     SOURCES, SOURCE_ICONS,
     sort_newest_first,
     within_24hrs, evaluate_batch,
-    SEARCH_KEYWORD, JobCollector, LI_LIMITER,
+    SEARCH_KEYWORD, JobCollector, LI_LIMITER, is_pm_eval_role,
 )
-from sheets_writer import save_eval_jobs, load_seen_urls
+from candidate_profile import load_candidate_profile
+from decision_rules import decide
+from sheets_writer import save_eval_jobs, load_seen_urls_and_keys
 from ntfy_notify import run_summary
 from datetime import datetime
 
 SPREADSHEET_ID = os.environ.get("PM_EVAL_SPREADSHEET_ID", "")
+
+def _print_jd_quality_summary(jobs: list) -> None:
+    """How many jobs per source had no usable JD. A jump here means that source's
+    selectors broke — previously invisible, because a JD-less job still got a
+    confident-looking decision."""
+    per_source = {}
+    for job in jobs:
+        quality = (job.get("evaluation", {}).get("features", {}) or {}).get("jd_quality", "unknown")
+        bucket = per_source.setdefault(job.get("source", "(unknown)"), {})
+        bucket[quality] = bucket.get(quality, 0) + 1
+
+    if not per_source:
+        return
+    print("\n  JD quality by source:")
+    for source in sorted(per_source):
+        counts = per_source[source]
+        unusable = counts.get("garbage", 0) + counts.get("thin", 0)
+        detail = ", ".join(f"{n} {q}" for q, n in sorted(counts.items()))
+        flag = "   ⚠️  check this source's selectors" if unusable and unusable >= sum(counts.values()) / 2 else ""
+        print(f"    {source:<18} {detail}{flag}")
+
 
 # ─────────────────────────────────────────────
 # MAIN — single 24h run, then exit
@@ -52,9 +75,18 @@ def main() -> None:
     # Dedup MUST happen before evaluation — evaluating already-seen jobs burns
     # Claude API tokens for nothing. Load the real seen-set from the Sheet now,
     # not just at write time.
+    # Fail here, not 200 jobs in: without the profile every job would be scored
+    # against nothing. Never printed — this repo is public.
     try:
-        seen = load_seen_urls(SPREADSHEET_ID)
-        print(f"  Dedup: {len(seen)} known URL(s) loaded from Sheet")
+        load_candidate_profile()
+        print("  Candidate profile: loaded from CANDIDATE_PROFILE")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        sys.exit(1)
+
+    try:
+        seen, seen_job_keys = load_seen_urls_and_keys(SPREADSHEET_ID)
+        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_job_keys)} job key(s) from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}).")
         print("  Aborting run rather than risk re-evaluating everything at full API cost.")
@@ -63,7 +95,9 @@ def main() -> None:
     # Same collector the Gulf and global feeds use, so the per-reason counters show
     # exactly why jobs dropped out — otherwise a quiet run is indistinguishable from
     # an over-aggressive filter.
-    collector = JobCollector(seen_urls=seen, max_per_company=2)
+    # is_pm_eval_role (word boundaries, no BDM/category titles) applies to this feed
+    # only — Gulf and Global keep the original is_pm_role gate inside _parse_li_cards.
+    collector = JobCollector(seen_urls=seen, max_per_company=2, title_ok=is_pm_eval_role)
 
     for name, fetch_fn in SOURCES:
         icon = SOURCE_ICONS.get(name, "🔔")
@@ -92,12 +126,15 @@ def main() -> None:
         run_summary("PM Eval", 0, 0, 0)
         return
 
-    evaluated_jobs, aborted = evaluate_batch(all_jobs)
+    evaluated_jobs, aborted = evaluate_batch(all_jobs, decider=decide,
+                                             seen_job_keys=seen_job_keys)
 
     if not evaluated_jobs:
         print("\n  No jobs were successfully evaluated this run (API failures only).")
         run_summary("PM Eval — FAILED", 0, 0, 0)
         sys.exit(1)
+
+    _print_jd_quality_summary(evaluated_jobs)
 
     # Save to Google Sheets — dedup happens inside save_eval_jobs too (belt & suspenders)
     n_apply, n_maybe, n_skip = save_eval_jobs(SPREADSHEET_ID, evaluated_jobs)

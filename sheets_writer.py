@@ -3,6 +3,7 @@ sheets_writer.py — Google Sheets output for pm_eval
 """
 
 import os
+import hashlib
 import json
 import re
 import time
@@ -62,6 +63,11 @@ HEADERS_VISA_NO = [h for h in HEADERS_VISA if h != "JD"]
 HEADERS_EVAL = [
     "Month", "Date Found", "Title", "Company", "Location",
     "Source", "Decision", "Reason", "Gap", "URL", "JD",
+    # Content key: sha1(title + company + first 1500 chars of JD). Appended last, so
+    # no existing column letter moves. Lets dedup catch the same posting re-listed
+    # under a new URL, without re-reading the (huge) JD column on every run —
+    # _load_seen_job_keys reads this one narrow column instead.
+    "Job Key",
 ]
 
 # Sheets caps cell contents at 50,000 chars — stay well under that.
@@ -137,6 +143,31 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
 def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
 
+# job_content_key lives in core_eval_hosted (stdlib-only, no gspread) and is
+# imported lazily where needed, the same way job_fingerprint was.
+
+
+def _load_seen_job_keys(sh: gspread.Spreadsheet, tabs: tuple) -> set[str]:
+    """Job Key column only, found by header name. Rows written before this column
+    existed simply have no key and keep deduping by URL alone."""
+    keys = set()
+    for tab in tabs:
+        try:
+            ws      = sh.worksheet(tab)
+            headers = _with_retry(ws.row_values, 1)
+            if "Job Key" not in headers:
+                continue
+            for cell in _with_retry(ws.col_values, headers.index("Job Key") + 1)[1:]:
+                cell = (cell or "").strip()
+                if cell:
+                    keys.add(cell)
+        except gspread.WorksheetNotFound:
+            pass
+        except Exception as e:
+            print(f"  [sheets] Warning: job-key read failed for {tab}: {e}")
+    return keys
+
+
 def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set[str]:
     """Reads only the URL column (found by header name) on each tab — not a
     full-grid scan. Skip carries JD text too (see _jd_for_row), up to 45,000
@@ -180,6 +211,18 @@ def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
     return _load_seen_urls(sh, tabs=tabs)
+
+
+def load_seen_urls_and_keys(spreadsheet_id: str,
+                            tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> tuple[set, set]:
+    """(urls, job content keys) in one Sheet open. Callers filter on BOTH before
+    spending an API call — see job_content_key for why the key includes the JD."""
+    client = _get_client()
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
+    urls   = _load_seen_urls(sh, tabs=tabs)
+    keys   = _load_seen_job_keys(sh, tabs=tabs)
+    print(f"  [sheets] Dedup: {len(keys)} existing job key(s) loaded")
+    return urls, keys
 
 ROW_HEIGHT_PX = 21   # Sheets' default single-line row height
 
@@ -273,6 +316,8 @@ def save_visa_jobs(spreadsheet_id: str, jobs: list[dict],
     return len(rows), len(no_rows)
 
 def save_eval_jobs(spreadsheet_id: str, jobs: list[dict]) -> tuple[int, int, int]:
+    from core_eval_hosted import job_content_key as _content_key
+
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
     seen   = _load_seen_urls(sh)
@@ -300,6 +345,7 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list[dict]) -> tuple[int, int, int
             job.get("location", ""), job.get("source", ""),
             dec, ev.get("reason", ""), ev.get("gap", ""), url,
             _jd_for_row(ev.get("jd", "")),
+            _content_key(job.get("title", ""), job.get("company", ""), ev.get("jd", "")),
         ]
         if dec == "Apply":   rows_apply.append(row)
         elif dec == "Maybe": rows_maybe.append(row)
