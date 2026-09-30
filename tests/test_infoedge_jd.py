@@ -42,13 +42,13 @@ def _stub(monkeypatch, payload, status=200):
 
 def test_job_code_comes_from_the_url_and_query_strings_are_ignored(monkeypatch):
     seen = _stub(monkeypatch, {"data": {"introText": "<p>" + "Own the roadmap. " * 30 + "</p>"}})
-    core.fetch_jd_infoedge(HIRIST_URL)
+    core.fetch_jd_infoedge({"url": HIRIST_URL})
     assert seen["url"] == "https://gladiator.hirist.tech/job/detail?jobcode=1676036"
 
 
 def test_each_site_calls_its_own_host(monkeypatch):
     seen = _stub(monkeypatch, {"data": {"introText": "<p>text</p>"}})
-    core.fetch_jd_infoedge(IIM_URL)
+    core.fetch_jd_infoedge({"url": IIM_URL})
     assert seen["url"].startswith("https://gladiator.iimjobs.com/job/detail")
     assert seen["headers"].get("Referer") == "https://www.iimjobs.com/"
 
@@ -56,24 +56,24 @@ def test_each_site_calls_its_own_host(monkeypatch):
 def test_intro_text_is_html_and_comes_back_as_text(monkeypatch):
     _stub(monkeypatch, {"data": {"introText":
         "<p><b>Responsibilities : </b><br/><br/>- Own search ranking<br/>- Define PRDs</p>"}})
-    jd = core.fetch_jd_infoedge(IIM_URL)
+    jd = core.fetch_jd_infoedge({"url": IIM_URL})
     assert "<" not in jd
     assert "Responsibilities" in jd and "Own search ranking" in jd
 
 
 def test_a_url_with_no_job_code_is_not_fetched(monkeypatch):
     _stub(monkeypatch, {"data": {"introText": "<p>never reached</p>"}})
-    assert core.fetch_jd_infoedge("https://www.iimjobs.com/k/product-management-jobs") == ""
+    assert core.fetch_jd_infoedge({"url": "https://www.iimjobs.com/k/product-management-jobs"}) == ""
 
 
 def test_an_api_error_returns_nothing_rather_than_a_guess(monkeypatch):
     _stub(monkeypatch, {}, status=503)
-    assert core.fetch_jd_infoedge(IIM_URL) == ""
+    assert core.fetch_jd_infoedge({"url": IIM_URL}) == ""
 
 
 def test_a_missing_description_returns_nothing(monkeypatch):
     _stub(monkeypatch, {"data": {"introText": ""}})
-    assert core.fetch_jd_infoedge(IIM_URL) == ""
+    assert core.fetch_jd_infoedge({"url": IIM_URL}) == ""
 
 
 def test_a_jd_less_posting_is_unverified_not_skipped(monkeypatch):
@@ -96,3 +96,37 @@ def test_neither_source_starts_a_browser_any_more(source, monkeypatch):
     monkeypatch.setattr(core, "make_driver", explode)
     jd = core.fetch_jd_text({"source": source, "url": IIM_URL})
     assert len(jd) > core.MIN_JD_CHARS and not core.is_garbage_jd(jd)
+
+
+# ── the company name comes from the same response
+def test_the_real_company_name_replaces_the_scraped_one(monkeypatch):
+    """IIMJobs cards fall back to the experience range when the employer isn't named,
+    which is how "Product Lead - FinTech @ 5 - 8 yrs" reached the sheet."""
+    _stub(monkeypatch, {"data": {"introText": "<p>" + "Own payments. " * 40 + "</p>",
+                                 "companyData": {"companyName": "Bigbasket"}}})
+    job = {"url": IIM_URL, "source": "IIMJobs", "company": "5 - 8 yrs"}
+    core.fetch_jd_infoedge(job)
+    assert job["company"] == "Bigbasket"
+
+
+def test_an_anonymous_posting_keeps_the_sites_own_placeholder(monkeypatch):
+    """"Good Co." is what IIMJobs itself shows — wrong-but-honest beats a years range."""
+    _stub(monkeypatch, {"data": {"introText": "<p>text</p>",
+                                 "companyData": {"companyName": "Good Co."}}})
+    job = {"url": IIM_URL, "company": "5 - 10 yrs"}
+    core.fetch_jd_infoedge(job)
+    assert job["company"] == "Good Co."
+
+
+def test_a_missing_company_leaves_the_scraped_value_alone(monkeypatch):
+    _stub(monkeypatch, {"data": {"introText": "<p>text</p>", "companyData": {"companyName": ""}}})
+    job = {"url": IIM_URL, "company": "Rebel Foods"}
+    core.fetch_jd_infoedge(job)
+    assert job["company"] == "Rebel Foods"
+
+
+def test_the_company_is_repaired_even_when_there_is_no_jd(monkeypatch):
+    _stub(monkeypatch, {"data": {"introText": "", "companyData": {"companyName": "Zeta"}}})
+    job = {"url": IIM_URL, "company": "3 - 7 yrs"}
+    assert core.fetch_jd_infoedge(job) == ""
+    assert job["company"] == "Zeta"

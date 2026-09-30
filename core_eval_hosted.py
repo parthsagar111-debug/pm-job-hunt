@@ -874,12 +874,23 @@ INFOEDGE_JD_API = {
 _INFOEDGE_CODE_RE = re.compile(r"-(\d{5,})(?:\.html)?/?$")
 
 
-def fetch_jd_infoedge(url: str) -> str:
-    """JD text for an IIMJobs or Hirist posting. Returns "" on any failure."""
+def fetch_jd_infoedge(job: dict) -> str:
+    """JD text for an IIMJobs or Hirist posting. Returns "" on any failure.
+
+    Also repairs job["company"] from the same response. The listing cards only show
+    the employer when the posting names it, so the scraper's fallbacks used to record
+    the experience range instead — "Product Lead - FinTech @ 5 - 8 yrs". The API
+    carries the real name, and for an anonymous posting it carries IIMJobs' own
+    placeholder ("Good Co."), which is at least true.
+    """
+    url = job.get("url", "")
     m = _INFOEDGE_CODE_RE.search((url or "").split("?")[0])
     if not m:
         print(f"  ⚠️  JD fetch (Info Edge): no job code in {url!r}")
         return ""
+    # Route by the URL's own site: the two have SEPARATE id spaces, and asking one
+    # host for the other's job code returns a different job with a 200. Job 1676036 is
+    # TELUS Digital on hirist and J.P. Morgan on iimjobs.
     site = "hirist" if "hirist" in url else "iimjobs"
     api, referer = INFOEDGE_JD_API[site]
     try:
@@ -892,6 +903,10 @@ def fetch_jd_infoedge(url: str) -> str:
     except Exception as e:
         print(f"  ⚠️  JD fetch ({site}): {type(e).__name__}: {e}")
         return ""
+
+    company = ((data.get("companyData") or {}).get("companyName") or "").strip()
+    if company:
+        job["company"] = company
 
     # introText is an HTML fragment (<p>, <b>, <br/>), not plain text.
     intro = data.get("introText") or data.get("jobJdContent") or ""
@@ -957,7 +972,7 @@ def fetch_jd_text(job: dict) -> str:
             return jd
 
         elif source in ("Hirist/IIMJobs", "IIMJobs"):
-            return fetch_jd_infoedge(url)
+            return fetch_jd_infoedge(job)
 
         elif source == "Naukri":
             # Naukri blocks plain requests — use Selenium
