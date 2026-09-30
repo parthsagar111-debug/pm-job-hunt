@@ -179,31 +179,51 @@ def test_company_named_like_a_range_is_not_confused():
     assert core._split_naukri_company("12 Yards Media", _FakeCard([]))[0] == "12 Yards Media"
 
 
-# ── content dedup key
-def test_key_needs_the_jd():
-    assert core.job_content_key("PM", "ACME", "") == ""
-    assert core.job_content_key("PM", "ACME", "   ") == ""
+# ── rows are positioned by header name, not by offset
+def test_rows_follow_the_sheets_own_header_order():
+    """The Sheet has columns this module doesn't write. On 2026-09-30 a 12-value row
+    was appended positionally to a 13-column sheet and 166 hashes overwrote Agent 1's
+    "Resume Match Score". Values must land under their own header or nowhere."""
+    import sheets_writer as sw
+    live = sw.HEADERS_EVAL + ["Resume Match Score", "Resume Decision"]
+    rows = sw._align_rows([{"Title": "PM", "URL": "u", "Decision": "Apply"}], live, "Apply")
+    assert len(rows[0]) == len(live)
+    assert rows[0][live.index("Title")] == "PM"
+    assert rows[0][live.index("Decision")] == "Apply"
+    assert rows[0][live.index("Resume Match Score")] == ""
+    assert rows[0][live.index("Resume Decision")] == ""
 
 
-def test_same_posting_same_key_despite_formatting():
-    jd = "Own the roadmap for checkout. " * 40
-    a = core.job_content_key("Senior Product Manager", "ACME", jd)
-    b = core.job_content_key("  senior   product manager ", "acme", jd.replace(" ", "  "))
-    assert a == b and len(a) == 40
+def test_a_reordered_sheet_still_gets_correct_columns():
+    import sheets_writer as sw
+    live = ["URL", "Title", "Decision"]
+    out = sw._align_rows([{"Title": "PM", "URL": "u", "Decision": "Skip"}], live, "Skip")
+    assert out == [["u", "PM", "Skip"]]
 
 
-def test_same_title_and_company_but_different_jd_are_different_jobs():
-    """The company+title-only key dropped 168 real jobs on 2026-09-18."""
-    a = core.job_content_key("Product Manager", "Flipkart", "Own search ranking. " * 40)
-    b = core.job_content_key("Product Manager", "Flipkart", "Own seller payments. " * 40)
-    assert a != b
+def test_a_value_with_no_column_is_reported_not_misplaced(capsys):
+    import sheets_writer as sw
+    rows = sw._align_rows([{"Title": "PM", "Nonesuch": "x"}], ["Title", "URL"], "Apply")
+    assert rows == [["PM", ""]]
+    assert "Nonesuch" in capsys.readouterr().out
 
 
-def test_only_the_first_1500_chars_matter():
-    head = "Identical opening. " * 90          # > 1500 chars
-    a = core.job_content_key("PM", "ACME", head + "tail A")
-    b = core.job_content_key("PM", "ACME", head + "tail B")
-    assert a == b
+def test_empty_header_row_falls_back_to_this_modules_order():
+    import sheets_writer as sw
+
+    class _WS:
+        title = "Apply"
+        def row_values(self, n):
+            return []
+
+    assert sw._live_headers(_WS(), sw.HEADERS_EVAL) == sw.HEADERS_EVAL
+
+
+def test_job_key_column_is_gone():
+    """Nothing writes a content hash any more — dedup is URL-only again."""
+    import sheets_writer as sw
+    assert "Job Key" not in sw.HEADERS_EVAL
+    assert not hasattr(core, "job_content_key")
 
 
 # ── prompt caching

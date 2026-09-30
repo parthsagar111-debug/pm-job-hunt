@@ -60,14 +60,13 @@ HEADERS_VISA   = [
 # Rejects skip the JD cell — they're for scanning, not for storing 45k-char cells.
 HEADERS_VISA_NO = [h for h in HEADERS_VISA if h != "JD"]
 
+# The columns THIS module writes. The Sheet carries more: Agent 1 owns "Resume Match
+# Score" and "Resume Decision" after column K. So rows are positioned by header NAME
+# at write time (_align_rows), never by this list's order — see that function for the
+# bug that made the rule non-negotiable.
 HEADERS_EVAL = [
     "Month", "Date Found", "Title", "Company", "Location",
     "Source", "Decision", "Reason", "Gap", "URL", "JD",
-    # Content key: sha1(title + company + first 1500 chars of JD). Appended last, so
-    # no existing column letter moves. Lets dedup catch the same posting re-listed
-    # under a new URL, without re-reading the (huge) JD column on every run —
-    # _load_seen_job_keys reads this one narrow column instead.
-    "Job Key",
 ]
 
 # Sheets caps cell contents at 50,000 chars — stay well under that.
@@ -143,29 +142,28 @@ def _ensure_tab(sh: gspread.Spreadsheet, name: str, headers: list) -> gspread.Wo
 def _clean_url(url: str) -> str:
     return url.split("?")[0].strip() if url else ""
 
-# job_content_key lives in core_eval_hosted (stdlib-only, no gspread) and is
-# imported lazily where needed, the same way job_fingerprint was.
+def _live_headers(ws: gspread.Worksheet, fallback: list) -> list:
+    """The tab's ACTUAL row 1, which is the only thing that says where a column is."""
+    try:
+        live = [h.strip() for h in (_with_retry(ws.row_values, 1) or [])]
+    except Exception as e:
+        print(f"  [sheets] Warning: couldn't read {ws.title} headers ({e}) — using this module's order")
+        return list(fallback)
+    return live or list(fallback)
 
 
-def _load_seen_job_keys(sh: gspread.Spreadsheet, tabs: tuple) -> set[str]:
-    """Job Key column only, found by header name. Rows written before this column
-    existed simply have no key and keep deduping by URL alone."""
-    keys = set()
-    for tab in tabs:
-        try:
-            ws      = sh.worksheet(tab)
-            headers = _with_retry(ws.row_values, 1)
-            if "Job Key" not in headers:
-                continue
-            for cell in _with_retry(ws.col_values, headers.index("Job Key") + 1)[1:]:
-                cell = (cell or "").strip()
-                if cell:
-                    keys.add(cell)
-        except gspread.WorksheetNotFound:
-            pass
-        except Exception as e:
-            print(f"  [sheets] Warning: job-key read failed for {tab}: {e}")
-    return keys
+def _align_rows(rows: list[dict], headers: list, tab: str) -> list[list]:
+    """Position each row by header name, leaving columns this module doesn't own blank.
+
+    append_rows writes by POSITION. On 2026-09-30 a 12th value was appended to a row
+    whose sheet had 13 columns, and 166 content hashes landed in Agent 1's "Resume
+    Match Score" column — silently, because the matching header couldn't be created
+    (the grid was already at its last column). Names, not offsets, from here on.
+    """
+    unknown = sorted({k for row in rows for k in row} - set(headers))
+    if unknown:
+        print(f"  [sheets] Warning: {tab} has no column for {unknown} — those values were NOT written")
+    return [[row.get(h, "") for h in headers] for row in rows]
 
 
 def _load_seen_urls(sh: gspread.Spreadsheet, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> set[str]:
@@ -212,17 +210,6 @@ def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
     return _load_seen_urls(sh, tabs=tabs)
 
-
-def load_seen_urls_and_keys(spreadsheet_id: str,
-                            tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB_SKIP)) -> tuple[set, set]:
-    """(urls, job content keys) in one Sheet open. Callers filter on BOTH before
-    spending an API call — see job_content_key for why the key includes the JD."""
-    client = _get_client()
-    sh     = _with_retry(client.open_by_key, spreadsheet_id)
-    urls   = _load_seen_urls(sh, tabs=tabs)
-    keys   = _load_seen_job_keys(sh, tabs=tabs)
-    print(f"  [sheets] Dedup: {len(keys)} existing job key(s) loaded")
-    return urls, keys
 
 ROW_HEIGHT_PX = 21   # Sheets' default single-line row height
 
@@ -316,8 +303,6 @@ def save_visa_jobs(spreadsheet_id: str, jobs: list[dict],
     return len(rows), len(no_rows)
 
 def save_eval_jobs(spreadsheet_id: str, jobs: list[dict]) -> tuple[int, int, int]:
-    from core_eval_hosted import job_content_key as _content_key
-
     client = _get_client()
     sh     = _with_retry(client.open_by_key, spreadsheet_id)
     seen   = _load_seen_urls(sh)
@@ -339,21 +324,29 @@ def save_eval_jobs(spreadsheet_id: str, jobs: list[dict]) -> tuple[int, int, int
         seen.add(url)
         ev  = job.get("evaluation", {})
         dec = ev.get("decision", "Skip")
-        row = [
-            month_str, date_str,
-            job.get("title", ""), job.get("company", ""),
-            job.get("location", ""), job.get("source", ""),
-            dec, ev.get("reason", ""), ev.get("gap", ""), url,
-            _jd_for_row(ev.get("jd", "")),
-            _content_key(job.get("title", ""), job.get("company", ""), ev.get("jd", "")),
-        ]
+        row = {
+            "Month":      month_str,
+            "Date Found": date_str,
+            "Title":      job.get("title", ""),
+            "Company":    job.get("company", ""),
+            "Location":   job.get("location", ""),
+            "Source":     job.get("source", ""),
+            "Decision":   dec,
+            "Reason":     ev.get("reason", ""),
+            "Gap":        ev.get("gap", ""),
+            "URL":        url,
+            "JD":         _jd_for_row(ev.get("jd", "")),
+        }
         if dec == "Apply":   rows_apply.append(row)
         elif dec == "Maybe": rows_maybe.append(row)
         else:                rows_skip.append(row)
 
-    if rows_apply: _with_retry(ws_apply.append_rows, rows_apply, value_input_option="USER_ENTERED")
-    if rows_maybe: _with_retry(ws_maybe.append_rows, rows_maybe, value_input_option="USER_ENTERED")
-    if rows_skip:  _with_retry(ws_skip.append_rows,  rows_skip,  value_input_option="USER_ENTERED")
+    for ws, rows, tab in ((ws_apply, rows_apply, TAB_APPLY),
+                          (ws_maybe, rows_maybe, TAB_MAYBE),
+                          (ws_skip,  rows_skip,  TAB_SKIP)):
+        if rows:
+            _with_retry(ws.append_rows, _align_rows(rows, _live_headers(ws, HEADERS_EVAL), tab),
+                        value_input_option="USER_ENTERED")
 
     _compact_rows(sh, [ws_apply, ws_maybe, ws_skip])
 

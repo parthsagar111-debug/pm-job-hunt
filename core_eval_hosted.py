@@ -13,7 +13,6 @@ Differences from local core_eval.py:
 - Selenium stays for Naukri/Hirist/IIMJobs (works headless on Ubuntu CI)
 """
 
-import hashlib
 import random
 import re
 from collections import Counter
@@ -1145,6 +1144,36 @@ def usage_cost_usd(usage: Counter | dict | None = None) -> float:
             + u.get("output_tokens", 0) * PRICE_PER_MTOK["output"]
             + u.get("cache_creation_input_tokens", 0) * PRICE_PER_MTOK["cache_write"]
             + u.get("cache_read_input_tokens", 0) * PRICE_PER_MTOK["cache_read"]) / 1e6
+
+
+def print_token_report(jobs_evaluated: int = 0) -> None:
+    """Tokens and cost for the whole process. Counts only — never prompt text.
+
+    Cache reads are the number to watch: the static prefix (profile + definitions +
+    few-shots) is ~2.5k tokens on every job, so if reads stay at 0 the cache_control
+    block isn't taking and we're paying full price for the same text 150 times a run.
+    """
+    u           = TOKEN_USAGE
+    fresh       = u.get("input_tokens", 0)
+    cache_write = u.get("cache_creation_input_tokens", 0)
+    cache_read  = u.get("cache_read_input_tokens", 0)
+    output      = u.get("output_tokens", 0)
+    total_input = fresh + cache_write + cache_read
+
+    print(f"  Tokens: {u.get('calls', 0)} call(s)  "
+          f"in {total_input:,} (fresh {fresh:,}, cache write {cache_write:,}, "
+          f"cache read {cache_read:,})  out {output:,}")
+    if jobs_evaluated:
+        print(f"          avg {total_input // jobs_evaluated:,} in / "
+              f"{output // jobs_evaluated:,} out per job")
+    line = f"  Cost:   ${usage_cost_usd():.4f}"
+    if cache_read or cache_write:
+        uncached = (total_input * PRICE_PER_MTOK["input"]
+                    + output * PRICE_PER_MTOK["output"]) / 1e6
+        line += f"  (${uncached:.4f} without caching — saved ${uncached - usage_cost_usd():.4f})"
+    print(line)
+
+
 ANTHROPIC_URL   = "https://api.anthropic.com/v1/messages"
 
 class ClaudeSchemaError(RuntimeError):
@@ -1357,35 +1386,10 @@ def _validate_features(payload: dict) -> dict:
     return out
 
 
-JOB_KEY_JD_CHARS = 1500
-
-def job_content_key(title: str, company: str, jd_text: str) -> str:
-    """sha1(normalised title + company + first 1500 chars of JD).
-
-    Second dedup key alongside URL: a posting re-listed under a new id gets a new
-    URL but keeps its text. Deliberately includes the JD — a company+title-only key
-    was tried on 2026-09-18 and dropped 168 genuinely new jobs in one run, because
-    large employers repost the same title constantly. Requiring the text to match
-    too makes a collision mean "the same posting", not "the same role".
-
-    Returns "" when there's no JD, so JD-less rows never collide with each other.
-    """
-    jd = (jd_text or "").strip()
-    if not jd:
-        return ""
-    basis = "|".join((
-        " ".join((title or "").lower().split()),
-        " ".join((company or "").lower().split()),
-        " ".join(jd[:JOB_KEY_JD_CHARS].lower().split()),
-    ))
-    return hashlib.sha1(basis.encode("utf-8")).hexdigest()
-
-
 def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
     """(features, jd_text) for one job. Raises on any API/schema failure.
 
-    Pass jd_text when it has already been fetched (the caller dedups on its content
-    key first, so a repost costs a JD fetch but not an API call).
+    Pass jd_text when it has already been fetched, so the JD isn't downloaded twice.
 
     The local is_garbage_jd() check overrides the model: if we can see the text is a
     category menu or a stub, that is not a judgment call.
@@ -1431,19 +1435,10 @@ def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
     return features, jd_text
 
 
-def evaluate_job_features(job: dict, decider, seen_job_keys: set | None = None) -> dict:
-    """Feature extraction + the code-side decision, in the shape save_eval_jobs wants.
-
-    Decision "Duplicate" means the JD text matches a posting already in the Sheet
-    under a different URL — dropped before the API call, and never written.
-    """
+def evaluate_job_features(job: dict, decider) -> dict:
+    """Feature extraction + the code-side decision, in the shape save_eval_jobs wants."""
     try:
         jd_text = fetch_jd_text(job)
-        if seen_job_keys:
-            key = job_content_key(job.get("title", ""), job.get("company", ""), jd_text)
-            if key and key in seen_job_keys:
-                return {"decision": "Duplicate", "reason": "Same posting text already in the Sheet",
-                        "gap": "—", "jd": jd_text, "features": {}}
         features, jd_text = extract_features(job, jd_text)
     except Exception as e:
         print(f"    ⚠️  Feature extraction failed: {type(e).__name__}: {e}")
@@ -1464,7 +1459,7 @@ def evaluate_job_features(job: dict, decider, seen_job_keys: set | None = None) 
 CONSECUTIVE_ERROR_LIMIT = 3  # abort early if the API is clearly down (bad key, no funds, outage)
 
 def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
-                   decider=None, seen_job_keys: set | None = None) -> tuple[list[dict], bool]:
+                   decider=None) -> tuple[list[dict], bool]:
     """
     Returns (evaluated_jobs, aborted).
     evaluated_jobs only contains jobs that got a real decision — jobs whose API
@@ -1484,7 +1479,7 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
         company = job.get("company", "")
         icon    = SOURCE_ICONS.get(job.get("source", ""), "🔔")
         print(f"  [{i}/{total}] {icon} 📄 {title} @ {company}...", end=" ", flush=True)
-        ev = (evaluate_job_features(job, decider, seen_job_keys) if decider
+        ev = (evaluate_job_features(job, decider) if decider
               else evaluate_job(job, prompt_template))
         job["evaluation"] = ev
         badge = {"Apply": "✅", "Maybe": "🤔", "Skip": "❌", "Error": "⚠️"}.get(ev["decision"], "—")
@@ -1497,10 +1492,6 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
                   f"yrs={f.get('years_min')}-{f.get('years_max')} domain={f.get('domain_class')} "
                   f"fit={f.get('fit_score')} jd={f.get('jd_quality')} "
                   f"blockers={f.get('hard_blockers')}")
-
-        if ev["decision"] == "Duplicate":
-            # Not an error and not a result — the same posting is already recorded.
-            continue
 
         if ev["decision"] == "Error":
             consecutive_errors += 1

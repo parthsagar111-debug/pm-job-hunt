@@ -25,12 +25,12 @@ import core_eval_hosted as core
 from core_eval_hosted import (
     SOURCES, SOURCE_ICONS,
     sort_newest_first,
-    within_24hrs, evaluate_batch,
+    within_24hrs, evaluate_batch, print_token_report,
     SEARCH_KEYWORD, JobCollector, LI_LIMITER, is_pm_eval_role,
 )
 from candidate_profile import load_candidate_profile
 from decision_rules import decide
-from sheets_writer import save_eval_jobs, load_seen_urls_and_keys
+from sheets_writer import save_eval_jobs, load_seen_urls
 from ntfy_notify import run_summary
 from datetime import datetime
 
@@ -85,8 +85,8 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        seen, seen_job_keys = load_seen_urls_and_keys(SPREADSHEET_ID)
-        print(f"  Dedup: {len(seen)} known URL(s), {len(seen_job_keys)} job key(s) from Sheet")
+        seen = load_seen_urls(SPREADSHEET_ID)
+        print(f"  Dedup: {len(seen)} known URL(s) from Sheet")
     except Exception as e:
         print(f"  ERROR: could not load dedup state from Sheet ({e}).")
         print("  Aborting run rather than risk re-evaluating everything at full API cost.")
@@ -126,8 +126,7 @@ def main() -> None:
         run_summary("PM Eval", 0, 0, 0)
         return
 
-    evaluated_jobs, aborted = evaluate_batch(all_jobs, decider=decide,
-                                             seen_job_keys=seen_job_keys)
+    evaluated_jobs, aborted = evaluate_batch(all_jobs, decider=decide)
 
     if not evaluated_jobs:
         print("\n  No jobs were successfully evaluated this run (API failures only).")
@@ -146,6 +145,7 @@ def main() -> None:
     print(f"\n{'='*55}")
     print(f"  Done. Apply: {n_apply}  Maybe: {n_maybe}  Skip: {n_skip}")
     print(f"  Rate: {LI_LIMITER.summary()}")
+    print_token_report(len(evaluated_jobs))
     if aborted:
         print("  NOTE: run was aborted early due to repeated API errors — some jobs untouched, will retry next run.")
     print(f"{'='*55}\n")
