@@ -36,6 +36,12 @@ from datetime import datetime
 
 SPREADSHEET_ID = os.environ.get("PM_EVAL_SPREADSHEET_ID", "")
 
+# A source has to contribute at least this many jobs before its garbage/thin share
+# means anything. An incremental run can bring in ONE Hirist job; if the model calls
+# that single JD thin, a bare percentage test reads 100% and cries broken selectors.
+MIN_JOBS_TO_FLAG_SOURCE = 5
+
+
 def _print_jd_quality_summary(jobs: list) -> None:
     """How many jobs per source had no usable JD. A jump here means that source's
     selectors broke — previously invisible, because a JD-less job still got a
@@ -50,10 +56,12 @@ def _print_jd_quality_summary(jobs: list) -> None:
         return
     print("\n  JD quality by source:")
     for source in sorted(per_source):
-        counts = per_source[source]
+        counts   = per_source[source]
+        total    = sum(counts.values())
         unusable = counts.get("garbage", 0) + counts.get("thin", 0)
-        detail = ", ".join(f"{n} {q}" for q, n in sorted(counts.items()))
-        flag = "   ⚠️  check this source's selectors" if unusable and unusable >= sum(counts.values()) / 2 else ""
+        detail   = ", ".join(f"{n} {q}" for q, n in sorted(counts.items()))
+        flag = ("   ⚠️  check this source's selectors"
+                if total >= MIN_JOBS_TO_FLAG_SOURCE and unusable >= total / 2 else "")
         print(f"    {source:<18} {detail}{flag}")
 
 
