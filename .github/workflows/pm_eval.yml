@@ -33,5 +33,9 @@ jobs:
           ANTHROPIC_API_KEY:           ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           PM_EVAL_SPREADSHEET_ID:      ${{ secrets.PM_EVAL_SPREADSHEET_ID }}
+          # The candidate profile the classifier scores against — rendered from
+          # resume_facts.json by job-automation's build_candidate_profile.py. Kept in a
+          # secret because this repo is public.
+          CANDIDATE_PROFILE:           ${{ secrets.CANDIDATE_PROFILE }}
           NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
         run: python pm_eval_hosted.py
