@@ -78,7 +78,11 @@ def test_menu_detected_regardless_of_whitespace():
 
 # ── the removed fallback
 def test_no_selector_match_returns_empty_not_page_text(monkeypatch):
-    """Previously this returned the largest <div> — i.e. the nav menu."""
+    """Previously this returned the largest <div> — i.e. the nav menu.
+
+    Naukri is the last source that reads a rendered page; IIMJobs and Hirist now go
+    through the Info Edge API instead (tests/test_infoedge_jd.py).
+    """
     page = (
         "<html><title>Product Manager Jobs</title><body>"
         f"<div class='nav'>{IIMJOBS_MENU}</div>"
@@ -88,29 +92,28 @@ def test_no_selector_match_returns_empty_not_page_text(monkeypatch):
 
     class FakeDriver:
         page_source = page
-        current_url = "https://www.iimjobs.com/j/some-role-123456"
+        current_url = "https://www.naukri.com/job-listings-product-manager-123456"
         def get(self, url): pass
         def quit(self): pass
 
     monkeypatch.setattr(core, "make_driver", lambda: FakeDriver())
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
-    out = core.fetch_jd_text({"url": "https://www.iimjobs.com/j/some-role-123456",
-                              "source": "IIMJobs"})
+    out = core.fetch_jd_text({"url": FakeDriver.current_url, "source": "Naukri"})
     assert out == ""
     assert "Banking" not in out
 
 
 def test_matching_selector_still_returns_the_description(monkeypatch):
-    page = f"<html><body><div class='job-description'>{REAL_JD}</div></body></html>"
+    page = f"<html><body><div class='job-description-text'>{REAL_JD}</div></body></html>"
 
     class FakeDriver:
         page_source = page
-        current_url = "https://www.hirist.tech/j/role-1"
+        current_url = "https://www.naukri.com/job-listings-product-manager-123456"
         def get(self, url): pass
         def quit(self): pass
 
     monkeypatch.setattr(core, "make_driver", lambda: FakeDriver())
     monkeypatch.setattr(core.time, "sleep", lambda s: None)
-    out = core.fetch_jd_text({"url": "https://www.hirist.tech/j/role-1", "source": "Hirist/IIMJobs"})
+    out = core.fetch_jd_text({"url": FakeDriver.current_url, "source": "Naukri"})
     assert "Senior Product Manager" in out
     assert core.is_garbage_jd(out) is False

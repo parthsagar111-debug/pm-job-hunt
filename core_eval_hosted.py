@@ -10,7 +10,8 @@ Differences from local core_eval.py:
 - No plyer desktop notifications
 - Expanded LinkedIn keyword list (Associate PM → VP of Product)
 - LinkedIn JD via the logged-out guest endpoint (no browser)
-- Selenium stays for Naukri/Hirist/IIMJobs (works headless on Ubuntu CI)
+- Selenium stays for Naukri, and for the IIMJobs/Hirist job LISTS; their JDs come
+  from the Info Edge API (see fetch_jd_infoedge)
 """
 
 import random
@@ -857,6 +858,49 @@ def fetch_jd_guest(job_id_or_url: str) -> str:
     return el.get_text("\n", strip=True) if el else ""
 
 
+# IIMJobs and Hirist are one platform (Info Edge) behind one backend. Their job
+# pages are Next.js shells: the description is not in the HTML at all, it is fetched
+# client-side afterwards. Selecting on the rendered DOM is what made every one of the
+# 39 IIMJobs/Hirist JDs garbage on 2026-09-30 — and the containers carry MUI hashed
+# class names (mui-style-12ypbxt) that change on their next deploy, so no selector
+# would have stayed fixed either. The endpoint the page calls needs no auth, no
+# cookie and no browser, which also takes these JDs from ~8s each to well under one.
+INFOEDGE_JD_API = {
+    "hirist":  ("https://gladiator.hirist.tech/job/detail",  "https://www.hirist.tech/"),
+    "iimjobs": ("https://gladiator.iimjobs.com/job/detail", "https://www.iimjobs.com/"),
+}
+
+# Every job URL on both sites ends in the numeric job code: /j/<slug>-1737122
+_INFOEDGE_CODE_RE = re.compile(r"-(\d{5,})(?:\.html)?/?$")
+
+
+def fetch_jd_infoedge(url: str) -> str:
+    """JD text for an IIMJobs or Hirist posting. Returns "" on any failure."""
+    m = _INFOEDGE_CODE_RE.search((url or "").split("?")[0])
+    if not m:
+        print(f"  ⚠️  JD fetch (Info Edge): no job code in {url!r}")
+        return ""
+    site = "hirist" if "hirist" in url else "iimjobs"
+    api, referer = INFOEDGE_JD_API[site]
+    try:
+        r = _LI_GET(f"{api}?jobcode={m.group(1)}", timeout=20,
+                    headers={"Referer": referer})
+        if r.status_code != 200:
+            print(f"  ⚠️  JD fetch ({site}): API returned {r.status_code} for job {m.group(1)}")
+            return ""
+        data = (r.json() or {}).get("data") or {}
+    except Exception as e:
+        print(f"  ⚠️  JD fetch ({site}): {type(e).__name__}: {e}")
+        return ""
+
+    # introText is an HTML fragment (<p>, <b>, <br/>), not plain text.
+    intro = data.get("introText") or data.get("jobJdContent") or ""
+    if not intro:
+        print(f"  ⚠️  JD fetch ({site}): no introText for job {m.group(1)}")
+        return ""
+    return BeautifulSoup(intro, "html.parser").get_text("\n", strip=True)[:4000]
+
+
 # A JD shorter than this can't carry responsibilities and requirements — it's a
 # stub, a paywall, or a fragment of chrome.
 MIN_JD_CHARS = 300
@@ -912,8 +956,11 @@ def fetch_jd_text(job: dict) -> str:
                 print(f"  ⚠️  JD fetch ({source}): guest endpoint returned nothing for {url}")
             return jd
 
-        elif source in ("Naukri", "Hirist/IIMJobs", "IIMJobs"):
-            # Both block plain requests — use Selenium
+        elif source in ("Hirist/IIMJobs", "IIMJobs"):
+            return fetch_jd_infoedge(url)
+
+        elif source == "Naukri":
+            # Naukri blocks plain requests — use Selenium
             driver = None
             try:
                 driver = make_driver()
@@ -926,22 +973,14 @@ def fetch_jd_text(job: dict) -> str:
                 time.sleep(4)
                 soup = BeautifulSoup(driver.page_source, "html.parser")
 
-                if source == "Naukri":
-                    selectors = [
-                        "div.styles_JDC__dang-inner-html__wyFgJ",
-                        "div[class*='dang-inner-html']",
-                        "div[class*='job-desc']",
-                        "section[class*='job-desc']",
-                        "div[class*='jd-']",
-                        "div[class*='description']",
-                    ]
-                else:  # Hirist
-                    selectors = [
-                        "div.job-description",
-                        "div.jd-detail",
-                        "div[class*='description']",
-                        "div[class*='job-desc']",
-                    ]
+                selectors = [
+                    "div.styles_JDC__dang-inner-html__wyFgJ",
+                    "div[class*='dang-inner-html']",
+                    "div[class*='job-desc']",
+                    "section[class*='job-desc']",
+                    "div[class*='jd-']",
+                    "div[class*='description']",
+                ]
 
                 for sel in selectors:
                     try:
@@ -952,12 +991,11 @@ def fetch_jd_text(job: dict) -> str:
                                 return txt[:4000]
                     except: pass
 
-                # The largest-<div> fallback that used to live here is GONE (2026-09-30).
-                # When no JD selector matched it returned the biggest text block on the
-                # page, which on IIMJobs/Hirist is the category nav ("Banking & Finance
-                # Finance & Accounts…"). That was then classified as if it were the job
-                # description. Returning nothing is honest: the caller routes a JD-less
-                # job down the UNVERIFIED path instead of inventing a decision from a menu.
+                # The largest-<div> fallback that used to live here is GONE (2026-09-30):
+                # when no selector matched it returned the biggest text block on the page,
+                # which is the category nav, and that was classified as the job description.
+                # Returning nothing is honest — the caller routes a JD-less job down the
+                # UNVERIFIED path instead of inventing a decision from a menu.
                 page_title = (soup.title.string.strip() if soup.title and soup.title.string else "")
                 print(f"  ⚠️  JD fetch ({source}): page loaded but no JD text matched — "
                       f"page title: {page_title!r}, landed at: {driver.current_url!r}")
