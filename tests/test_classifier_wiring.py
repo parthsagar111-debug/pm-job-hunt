@@ -260,8 +260,82 @@ def test_static_prefix_is_marked_for_caching(monkeypatch):
 
     blocks = captured["messages"][0]["content"]
     assert isinstance(blocks, list) and len(blocks) == 2
-    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    # 1-hour TTL: PM Eval runs every 30 minutes, so the 5-minute default expired before
+    # every run and the whole static block was re-written each time.
+    assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert "cache_control" not in blocks[1]
+
+
+def test_ttl_refusal_falls_back_to_the_default_cache(monkeypatch):
+    """If the API ever rejects the 1h TTL, the job still gets evaluated (5-minute cache)."""
+    monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    bodies = []
+
+    class Refused:
+        status_code = 400
+        text = '{"error": {"message": "cache_control.ttl: not supported"}}'
+        def raise_for_status(self): raise AssertionError("not raised for the retried call")
+
+    class Ok:
+        status_code = 200
+        text = ""
+        def raise_for_status(self): pass
+        def json(self):
+            return {"content": [{"type": "tool_use", "name": "record_features",
+                                 "input": _valid_payload()}], "usage": {}}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        bodies.append(dict(json["messages"][0]["content"][0]["cache_control"]))
+        return Refused() if len(bodies) == 1 else Ok()
+
+    monkeypatch.setattr(core.requests, "post", fake_post)
+    features, _ = core.extract_features({"title": "PM", "company": "ACME", "location": "Mumbai",
+                                         "source": "Naukri"}, jd_text="Own checkout. " * 60)
+    assert bodies == [{"type": "ephemeral", "ttl": "1h"}, {"type": "ephemeral"}]
+    assert features["fit_score"] == _valid_payload()["fit_score"]
+
+
+def test_unusable_enum_is_filed_as_unverified_not_retried_forever(monkeypatch):
+    """A reply with domain_class '<UNKNOWN>' used to raise, so the job was re-sent (and
+    re-paid) every run. It now becomes a Maybe via the unreadable-JD path, never a Skip."""
+    from decision_rules import decide
+    monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    bad = {**_valid_payload(), "domain_class": "<UNKNOWN>"}
+
+    class R:
+        status_code = 200
+        text = ""
+        def raise_for_status(self): pass
+        def json(self):
+            return {"content": [{"type": "tool_use", "name": "record_features", "input": bad}],
+                    "usage": {}}
+
+    monkeypatch.setattr(core.requests, "post", lambda *a, **k: R())
+    monkeypatch.setattr(core, "fetch_jd_text", lambda job: "Own the checkout funnel. " * 60)
+    ev = core.evaluate_job_features({"title": "Product Manager", "company": "Just Dial",
+                                     "location": "Mumbai", "source": "Naukri"}, decide)
+    assert ev["decision"] == "Maybe"
+    assert "UNVERIFIED" in ev["reason"]
+
+
+def test_only_the_extreme_tail_of_a_jd_is_cut_from_the_prompt(monkeypatch):
+    monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
+    captured = _capture_request(monkeypatch)
+    jd = "Z" * (core.JD_PROMPT_MAX_CHARS + 5000)
+    core.JD_SENT_CHARS.clear()
+    core.extract_features({"title": "PM", "company": "ACME", "location": "Mumbai",
+                           "source": "Naukri"}, jd_text=jd)
+    sent = captured["messages"][0]["content"][1]["text"]
+    assert sent.count("Z") == core.JD_PROMPT_MAX_CHARS
+    assert core.JD_SENT_CHARS == [len(jd)]          # the run report records the FULL length
+
+
+def test_free_text_fields_are_asked_to_be_short():
+    props = core.FEATURES_TOOL_SCHEMA["properties"]
+    assert "10 words" in props["reason"]["description"]
+    assert "6 words" in props["gap"]["description"]
 
 
 def test_jd_stays_outside_the_cached_block(monkeypatch):

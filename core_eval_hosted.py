@@ -1043,7 +1043,7 @@ def fetch_jd_text(job: dict) -> str:
 # same JD produces the same tab every time. The profile comes from the
 # CANDIDATE_PROFILE secret — never hardcoded, never logged (this repo is public).
 FEATURE_PROMPT_TEMPLATE = """You are extracting structured facts about a job listing for a
-Senior Product Manager (9+ years) job-hunting in India. You do NOT decide whether to apply —
+Senior Product Manager (10+ years) job-hunting in India. You do NOT decide whether to apply —
 separate code does that from the fields you return. Report only what the listing supports.
 
 CANDIDATE PROFILE
@@ -1137,8 +1137,8 @@ FEATURES_TOOL_SCHEMA = {
                                   "description": "Top of the stated CTC range in LPA, if stated."},
         "jd_quality":     {"type": "string", "enum": ["ok", "thin", "garbage"]},
         "fit_score":      {"type": "integer", "description": "0-100 fit, ignoring blockers."},
-        "reason":         {"type": "string", "description": "Max 15 words."},
-        "gap":            {"type": "string", "description": "Max 12 words, or 'None'."},
+        "reason":         {"type": "string", "description": "Max 10 words."},
+        "gap":            {"type": "string", "description": "Max 6 words, or 'None'."},
     },
     "required": ["is_pm_role", "title_level", "years_min", "years_max", "domain_class",
                  "hard_blockers", "requires_managing_pms", "stated_max_ctc_lpa",
@@ -1190,6 +1190,12 @@ PRICE_PER_MTOK = {"input": 1.0, "output": 5.0, "cache_write": 1.25, "cache_read"
 # costed without every caller threading usage back up.
 TOKEN_USAGE = Counter()
 
+# Longest JD text sent to the model, in characters (~2,500 tokens). Only the extreme
+# tail is cut: requirements and blockers sit near the top, and the sheet still stores
+# the full JD. Sizes are logged per run so this can be tuned from data.
+JD_PROMPT_MAX_CHARS = 10_000
+JD_SENT_CHARS: list = []
+
 
 def usage_cost_usd(usage: Counter | dict | None = None) -> float:
     u = TOKEN_USAGE if usage is None else usage
@@ -1219,6 +1225,12 @@ def print_token_report(jobs_evaluated: int = 0) -> None:
     if jobs_evaluated:
         print(f"          avg {total_input // jobs_evaluated:,} in / "
               f"{output // jobs_evaluated:,} out per job")
+    if JD_SENT_CHARS:
+        sizes = sorted(JD_SENT_CHARS)
+        p90 = sizes[min(len(sizes) - 1, int(len(sizes) * 0.9))]
+        cut = sum(1 for n in sizes if n > JD_PROMPT_MAX_CHARS)
+        print(f"  JD chars: {len(sizes)} sent, avg {sum(sizes) // len(sizes):,}, "
+              f"p90 {p90:,}, max {sizes[-1]:,}; {cut} cut at {JD_PROMPT_MAX_CHARS:,}")
     line = f"  Cost:   ${usage_cost_usd():.4f}"
     if cache_read or cache_write:
         uncached = (total_input * PRICE_PER_MTOK["input"]
@@ -1231,6 +1243,19 @@ ANTHROPIC_URL   = "https://api.anthropic.com/v1/messages"
 
 class ClaudeSchemaError(RuntimeError):
     """Claude replied, but not in the shape the caller demanded."""
+
+class ClaudeEnumError(ClaudeSchemaError):
+    """A required field held a value outside its enum. Carries the reply so a caller
+    that can tolerate it (PM Eval) doesn't have to pay for the same failing call again."""
+    def __init__(self, message: str, payload: dict, field: str):
+        super().__init__(message)
+        self.payload = payload
+        self.field = field
+
+# Cache lifetime for the static prompt block. PM Eval runs every 30 minutes, so the
+# default 5-minute cache expired before every single run and the ~4,600-token block
+# was re-written (1.25x) each time. One hour spans the gap: written once, read after.
+CACHE_TTL = "1h"
 
 def claude_structured(prompt: str, tool_name: str, tool_description: str,
                       input_schema: dict, max_tokens: int = 300,
@@ -1263,7 +1288,8 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
     """
     if cached_prefix:
         content = [
-            {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": cached_prefix,
+             "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL}},
             {"type": "text", "text": prompt},
         ]
     else:
@@ -1277,18 +1303,27 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
     if temperature is not None:
         body["temperature"] = temperature
 
-    resp = requests.post(
-        ANTHROPIC_URL,
-        headers={"Content-Type": "application/json", "x-api-key": _load_api_key(),
-                 "anthropic-version": "2023-06-01"},
-        json={
-            **body,
-            "tools":       [{"name": tool_name, "description": tool_description,
-                             "input_schema": input_schema}],
-            "tool_choice": {"type": "tool", "name": tool_name},
-        },
-        timeout=timeout,
-    )
+    def _post(req_body: dict):
+        return requests.post(
+            ANTHROPIC_URL,
+            headers={"Content-Type": "application/json", "x-api-key": _load_api_key(),
+                     "anthropic-version": "2023-06-01"},
+            json={
+                **req_body,
+                "tools":       [{"name": tool_name, "description": tool_description,
+                                 "input_schema": input_schema}],
+                "tool_choice": {"type": "tool", "name": tool_name},
+            },
+            timeout=timeout,
+        )
+
+    resp = _post(body)
+    if cached_prefix and resp.status_code == 400 and "ttl" in (resp.text or "").lower():
+        # The API refused the 1-hour TTL: fall back to the default 5-minute cache for
+        # this call (and say so) rather than failing every job in the run.
+        print("    (1h cache TTL refused by the API; using the default 5-minute cache)")
+        body["messages"][0]["content"][0]["cache_control"] = {"type": "ephemeral"}
+        resp = _post(body)
     resp.raise_for_status()
     data = resp.json()
 
@@ -1313,7 +1348,8 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
             raise ClaudeSchemaError(f"{tool_name} input missing required field {field!r}")
         allowed = props.get(field, {}).get("enum")
         if allowed and payload[field] not in allowed:
-            raise ClaudeSchemaError(f"{field}={payload[field]!r} is not one of {allowed}")
+            raise ClaudeEnumError(f"{field}={payload[field]!r} is not one of {allowed}",
+                                  payload, field)
     return payload, data.get("usage", {})
 
 
@@ -1461,25 +1497,39 @@ def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
         context_lines.append(f"Stated Experience: {stated_experience}")
 
     if jd_text and not is_garbage_jd(jd_text):
-        context_lines.append("\nFull Job Description:\n" + jd_text)
+        JD_SENT_CHARS.append(len(jd_text))
+        context_lines.append("\nFull Job Description:\n" + jd_text[:JD_PROMPT_MAX_CHARS])
     else:
         context_lines.append(
             "\n(No usable job description was retrieved — set jd_quality to "
             '"garbage" and judge nothing else from its absence.)'
         )
 
-    payload, _usage = claude_structured(
-        "\n".join(context_lines),
-        # Everything static (profile + definitions + few-shots) is cached; only the
-        # per-job lines above vary, so the prefix stays byte-identical across jobs.
-        cached_prefix=build_feature_prompt(),
-        tool_name="record_features",
-        tool_description="Record the extracted facts about this job listing.",
-        input_schema=FEATURES_TOOL_SCHEMA,
-        max_tokens=400,
-        temperature=0,
-    )
+    unverified = False
+    try:
+        payload, _usage = claude_structured(
+            "\n".join(context_lines),
+            # Everything static (profile + definitions + few-shots) is cached; only the
+            # per-job lines above vary, so the prefix stays byte-identical across jobs.
+            cached_prefix=build_feature_prompt(),
+            tool_name="record_features",
+            tool_description="Record the extracted facts about this job listing.",
+            input_schema=FEATURES_TOOL_SCHEMA,
+            max_tokens=400,
+            temperature=0,
+        )
+    except ClaudeEnumError as e:
+        # The model answered, but with a value outside an enum (e.g. domain_class
+        # "<UNKNOWN>"). At temperature 0 it answers the same way next run, so raising
+        # meant paying for this exact call every 30 minutes forever. Treat it as an
+        # unreadable listing instead: the code-side rules turn that into a Maybe
+        # flagged "UNVERIFIED JD" for a human to look at, never a Skip.
+        print(f"    (unusable {e.field!r} in the reply; filing as UNVERIFIED instead of retrying)")
+        payload = {**e.payload, "title_level": "pm", "domain_class": "non_core", "jd_quality": "garbage"}
+        unverified = True
     features = _validate_features(payload)
+    if unverified:
+        features["jd_quality"] = "garbage"
 
     # Local evidence wins: the model can't talk us out of what we can measure.
     if not jd_text or is_garbage_jd(jd_text):
