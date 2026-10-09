@@ -1251,6 +1251,45 @@ class ClaudeSchemaError(RuntimeError):
 class ClaudeAPIError(RuntimeError):
     """The Messages API refused the call. Carries the API's own error message."""
 
+
+def _api_error_detail(resp) -> str:
+    """The API's own reason for refusing, for the log.
+
+    raise_for_status() reports only the status and URL, which is how a run of 519 jobs
+    aborted at job 340 on 2026-10-09 with three consecutive "400 Bad Request" and
+    nothing to act on; the cause was an exhausted credit balance. The error body names
+    it, and it echoes no part of the prompt, so it is safe in a public log.
+    """
+    try:
+        err = (resp.json() or {}).get("error") or {}
+        if err.get("message"):
+            return f"{err.get('type', 'error')}: {err['message']}"
+    except ValueError:
+        pass
+    return (resp.text or "")[:300]
+
+
+def preflight_api_check() -> None:
+    """One minimal call before any scraping. Raises ClaudeAPIError if the API won't
+    serve us.
+
+    When the balance ran out on 2026-10-09 every scheduled run still searched
+    LinkedIn and fetched JDs at 1 req/s for minutes before its first evaluation call
+    failed — Actions minutes and LinkedIn traffic spent to discover something one
+    request answers. max_tokens=1 on a one-word prompt, so this costs about $0.00002.
+    """
+    resp = requests.post(
+        ANTHROPIC_URL,
+        headers={"Content-Type": "application/json", "x-api-key": _load_api_key(),
+                 "anthropic-version": "2023-06-01"},
+        json={"model": ANTHROPIC_MODEL, "max_tokens": 1,
+              "messages": [{"role": "user", "content": "ping"}]},
+        timeout=20,
+    )
+    if not 200 <= resp.status_code < 300:
+        raise ClaudeAPIError(
+            f"HTTP {resp.status_code} from the Messages API — {_api_error_detail(resp)}")
+
 class ClaudeEnumError(ClaudeSchemaError):
     """A required field held a value outside its enum. Carries the reply so a caller
     that can tolerate it (PM Eval) doesn't have to pay for the same failing call again."""
@@ -1333,19 +1372,8 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
         resp = _post(body)
 
     if not 200 <= resp.status_code < 300:
-        # raise_for_status() reports only the status and URL, which is how a run of 519
-        # jobs aborted at 340 on 2026-10-09 with three consecutive "400 Bad Request"
-        # and nothing to act on. The API's own error body says which it is — an
-        # exhausted credit balance, an over-long prompt, a bad request shape — and it
-        # echoes none of the prompt, so it is safe to print in a public log.
-        detail = (resp.text or "")[:300]
-        try:
-            err = (resp.json() or {}).get("error") or {}
-            if err.get("message"):
-                detail = f"{err.get('type', 'error')}: {err['message']}"
-        except ValueError:
-            pass
-        raise ClaudeAPIError(f"HTTP {resp.status_code} from the Messages API — {detail}")
+        raise ClaudeAPIError(
+            f"HTTP {resp.status_code} from the Messages API — {_api_error_detail(resp)}")
 
     data = resp.json()
 

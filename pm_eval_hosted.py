@@ -25,7 +25,7 @@ import core_eval_hosted as core
 from core_eval_hosted import (
     SOURCES, SOURCE_ICONS,
     sort_newest_first,
-    within_24hrs, within_week, evaluate_batch, print_token_report,
+    within_24hrs, within_week, evaluate_batch, print_token_report, preflight_api_check,
     SEARCH_KEYWORD, JobCollector, LI_LIMITER, is_pm_eval_role,
 )
 from candidate_profile import load_candidate_profile
@@ -99,6 +99,16 @@ def main() -> None:
         print("  Candidate profile: loaded from CANDIDATE_PROFILE")
     except Exception as e:
         print(f"  ERROR: {e}")
+        sys.exit(1)
+
+    # Before any scraping: a dead key or an empty balance should cost seconds, not a
+    # full LinkedIn crawl that ends in the first evaluation call failing anyway.
+    try:
+        preflight_api_check()
+        print("  Anthropic API: reachable")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        print("  Aborting before scraping — nothing to evaluate with.")
         sys.exit(1)
 
     try:
