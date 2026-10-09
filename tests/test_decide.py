@@ -201,7 +201,8 @@ def test_the_flexiple_row_lands_in_one_place_either_way():
 @pytest.mark.parametrize("blocker", ["mandatory_cs_or_engineering_degree",
                                      "other_mandatory_degree",
                                      "mandatory_platform_certification",
-                                     "pure_supply_chain_logistics_saas"])
+                                     "pure_supply_chain_logistics_saas",
+                                     "post_trade_aml_compliance_accounting"])
 @pytest.mark.parametrize("domain", ["core", "adjacent", "non_core"])
 def test_an_advisory_blocker_never_rejects_on_its_own(blocker, domain):
     decision, prefix = decide(features(domain_class=domain, fit_score=62,
@@ -219,7 +220,6 @@ def test_a_supply_chain_role_inside_e_commerce_is_not_blocked():
 
 @pytest.mark.parametrize("blocker", ["deep_infra_security_networking",
                                      "clinical_or_payer_healthcare_ops",
-                                     "post_trade_aml_compliance_accounting",
                                      "manufacturing_erp_industrial",
                                      "specialist_hardware"])
 def test_a_categorical_blocker_still_rejects(blocker):
@@ -266,3 +266,22 @@ def test_every_blocker_the_model_can_emit_is_classified():
     from decision_rules import ADVISORY_BLOCKERS, CATEGORICAL_BLOCKERS
     assert core.VALID_BLOCKERS == CATEGORICAL_BLOCKERS | ADVISORY_BLOCKERS
     assert not (CATEGORICAL_BLOCKERS & ADVISORY_BLOCKERS)
+
+
+def test_a_payments_role_is_not_a_compliance_role():
+    """M2P Fintech PM - Payments (core, fit 62) and Mastercard Scheme & Regulatory
+    (core, fit 72) were both Skipped on post_trade_aml_compliance_accounting. Every
+    payments JD mentions compliance; that does not make the job a compliance job."""
+    m2p = decide(features(domain_class="core", fit_score=62, years_min=8, years_max=12,
+                          hard_blockers=["post_trade_aml_compliance_accounting"]))
+    assert m2p == ("Maybe", CHECK_REQS_PREFIX)
+    mastercard = decide(features(domain_class="core", fit_score=72,
+                                 hard_blockers=["post_trade_aml_compliance_accounting"]))
+    assert mastercard[0] == "Apply"
+
+
+def test_a_genuine_back_office_compliance_role_still_skips():
+    """The 27 non_core rows carrying that blocker are caught by the fit floor, which
+    is why demoting it was cheap — it must stay that way."""
+    assert decide(features(domain_class="non_core", fit_score=25,
+                           hard_blockers=["post_trade_aml_compliance_accounting"]))[0] == "Skip"

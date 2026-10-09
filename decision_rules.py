@@ -75,10 +75,14 @@ CONFIG = {
 # Blockers worth rejecting on: a domain whose depth isn't learnable in a notice
 # period, and which no amount of PM craft substitutes for. Mislabelling one of these
 # requires the model to misread the whole JD, not just one line of it.
+#
+# Across 1,705 classified jobs these three fired on 228 rows and EVERY ONE was also
+# judged non_core — when the model sees this kind of depth it sees an unrelated job
+# too, which is what makes the pair trustworthy. post_trade_aml_compliance_accounting
+# failed that test (see below) and was moved out on 2026-10-10.
 CATEGORICAL_BLOCKERS = {
     "deep_infra_security_networking",
     "clinical_or_payer_healthcare_ops",
-    "post_trade_aml_compliance_accounting",
     "manufacturing_erp_industrial",
     "specialist_hardware",
 }
@@ -88,11 +92,21 @@ CATEGORICAL_BLOCKERS = {
 # docstring for the measurements. "pure_supply_chain_logistics_saas" is here because
 # the prompt itself says a supply-chain role inside a consumer e-commerce company is
 # adjacent, not blocked, and the rule kept contradicting that.
+#
+# post_trade_aml_compliance_accounting is here for a different reason: unlike the
+# other domain blockers it does NOT come with an unrelated-domain judgment. Of its 34
+# appearances, 7 were core or adjacent, and all 7 were payments roles in the
+# candidate's own domain — M2P Fintech (core, fit 62), Mastercard Scheme & Regulatory
+# (core, fit 72), CSC AVP Payments Product Owner, IDFC Retail FX/Remittances. Every
+# payments JD mentions compliance; that is not the same as the job being a compliance
+# job. Demoting it moves only those: 10 of the 15 rows carrying it in the 2026-10-09
+# backfill still Skip on the fit floor, because they really are unrelated.
 ADVISORY_BLOCKERS = {
     "mandatory_cs_or_engineering_degree",
     "other_mandatory_degree",
     "mandatory_platform_certification",
     "pure_supply_chain_logistics_saas",
+    "post_trade_aml_compliance_accounting",
 }
 
 # Prefixed onto the reason so a row that was never really read is obvious in the sheet.

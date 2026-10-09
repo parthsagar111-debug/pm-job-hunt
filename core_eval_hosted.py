@@ -1674,9 +1674,15 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
             # Per-job features are safe to log (no profile text) and make a wrong
             # tab traceable to the field that caused it.
             f = ev["features"]
+            # ctc and mgmt are here because three separate audits of these logs could
+            # not explain a Skip without them: they are the only two fields decide()
+            # reads that the line used to omit, so any unexplained row had to be one
+            # of them. jr is the code-computed title check, not the model's reading.
             print(f"      features: pm={f.get('is_pm_role')} level={f.get('title_level')} "
+                  f"jr={f.get('title_is_junior')} "
                   f"yrs={f.get('years_min')}-{f.get('years_max')} domain={f.get('domain_class')} "
                   f"fit={f.get('fit_score')} jd={f.get('jd_quality')} "
+                  f"ctc={f.get('stated_max_ctc_lpa')} mgmt={f.get('requires_managing_pms')} "
                   f"blockers={f.get('hard_blockers')}")
 
         if ev["decision"] == "Error":
