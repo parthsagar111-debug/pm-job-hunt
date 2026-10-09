@@ -13,8 +13,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from decision_rules import (
-    CHECK_REQS_PREFIX, CONFIG, CONFLICTED_PREFIX, JUNIOR_TITLE_PREFIX,
-    UNVERIFIED_PREFIX, decide,
+    CHECK_REQS_PREFIX, CONFIG, JUNIOR_TITLE_PREFIX, UNVERIFIED_PREFIX, decide,
 )
 
 
@@ -229,11 +228,12 @@ def test_a_categorical_blocker_still_rejects(blocker):
                            hard_blockers=[blocker])) == ("Skip", "")
 
 
-def test_not_a_pm_role_with_a_strong_close_domain_fit_is_conflicted():
-    """Growth Manager (core, fit 72) and CP Product Owner (core, fit 62) were both
-    Skipped as "not a PM role" by a reply that scored them well in the same breath."""
-    assert decide(features(is_pm_role=False, domain_class="core", fit_score=72)) == (
-        "Maybe", CONFLICTED_PREFIX)
+def test_a_strong_fit_score_does_not_overturn_not_a_pm_role():
+    """It briefly did, and that put "Growth Manager @ FRND" (core, fit 72) in Maybe.
+    fit_score answers "how well does the profile match", not "is this product
+    management" — the two are independent, so a high fit is not a contradiction."""
+    assert decide(features(is_pm_role=False, domain_class="core", fit_score=72)) == ("Skip", "")
+    assert decide(features(is_pm_role=False, domain_class="adjacent", fit_score=92)) == ("Skip", "")
 
 
 def test_not_a_pm_role_in_an_unrelated_domain_still_skips():

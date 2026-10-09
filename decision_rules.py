@@ -60,9 +60,6 @@ CONFIG = {
     # the Apply bars: it only has to separate "unrelated" from "worth a glance", and
     # it must sit below the model's run-to-run fit wobble, not inside it.
     "FIT_MAYBE_NON_CORE": 35,
-    # A reply that says "not a PM role" while also scoring this well in a close domain
-    # is contradicting itself. Don't reject on it; flag it and let a human look.
-    "FIT_PM_ROLE_OVERRIDE": 50,
 
     # Experience-range handling. years_max is the TOP of the range the JD states, so
     # a low ceiling means the role is aimed well below 9+ years.
@@ -104,8 +101,6 @@ UNVERIFIED_PREFIX = "UNVERIFIED JD — "
 CHECK_REQS_PREFIX = "CHECK REQS — "
 # Read as an APM/associate posting. Kept out of Apply, kept out of the bin.
 JUNIOR_TITLE_PREFIX = "JUNIOR TITLE — "
-# The reply called it a non-PM role and then scored it a strong domain fit anyway.
-CONFLICTED_PREFIX = "CONFLICTING SIGNALS — "
 
 _UNREADABLE_JD = {"garbage", "thin"}
 
@@ -132,9 +127,6 @@ def decide(features: dict, cfg: dict = CONFIG) -> tuple[str, str]:
     decision, notes = _classify(features, cfg)
 
     if decision != "Skip":
-        # A reply that contradicts itself is worth a look, never an application.
-        if CONFLICTED_PREFIX in notes and decision == "Apply":
-            decision = "Maybe"
         # An APM posting is not worth an application, but the label is too unreliable
         # to reject on — so it caps the outcome instead of deciding it.
         if features.get("title_level") == "apm":
@@ -157,13 +149,13 @@ def _classify(features: dict, cfg: dict) -> tuple[str, list]:
     fit = get("fit_score") or 0
 
     # 2. Not a PM role at all (PMM, BA, scrum master, project/program manager...).
-    #    Unless the same reply also puts it in a close domain with a real fit score,
-    #    which is self-contradictory and not something to act on.
+    #    A high fit score beside this is not a reason to doubt it: fit_score is scored
+    #    "as if the blockers did not exist" and says nothing about whether the job is
+    #    product management. Overriding it on a strong domain fit put "Growth Manager
+    #    @ FRND" (core, fit 72) into Maybe, and both cases it ever fired on were
+    #    correct rejections.
     if not get("is_pm_role"):
-        if domain in ("core", "adjacent") and fit >= cfg["FIT_PM_ROLE_OVERRIDE"]:
-            notes.append(CONFLICTED_PREFIX)
-        else:
-            return "Skip", notes
+        return "Skip", notes
 
     # 3. A domain the candidate categorically lacks. Advisory blockers are handled in
     #    decide() as a note — they are usually a preference phrased like a rule.

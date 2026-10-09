@@ -98,19 +98,26 @@ def is_pm_role(title: str) -> bool:
 # and an API call before being thrown away. Junior titles still pass: decide()
 # rule 4 skips them, so they stay visible as Skip rows rather than vanishing.
 PM_EVAL_TITLE_KEYWORDS = [
-    "product manager", "product management",
+    "product manager", "product management", "product owner", "product lead",
+    "product head", "head of product", "chief product", "director of product",
+    "vp of product", "product growth", "product strategy",
     "senior pm", "associate pm", "apm", "group pm", "principal pm",
-    "staff pm", "lead pm", "director of product", "vp of product",
-    "head of product", "chief product", "product lead", "product owner",
-    "growth pm", "technical pm", "platform pm", "pm", "pmm",
-    "d2c manager", "growth manager", "head of growth", "growth marketing",
-    "head of e-commerce", "ecommerce manager", "e-commerce manager",
-    "product marketing manager",
-    "strategy manager", "head of strategy",
+    "staff pm", "lead pm", "growth pm", "technical pm", "platform pm", "pm",
 ]
 
-# Dropped vs PM_KEYWORDS: "business development manager", "bdm", "category manager",
-# "category head" — sales and merchandising titles, not product roles.
+# Every keyword here names a PRODUCT role. The list used to carry "growth manager",
+# "head of growth", "growth marketing", "d2c manager", "strategy manager", "head of
+# strategy", "ecommerce manager", "pmm" and "product marketing manager" as well, on
+# the theory that the classifier would reject them — and it did, correctly, with
+# is_pm_role=false. But they still cost a JD fetch and an API call each, and one of
+# them reached Maybe when a later rule second-guessed that rejection ("Growth Manager
+# @ FRND", core, fit 72). Across 1,705 classified jobs, dropping them removes 15 rows,
+# all 15 of which the model had already called non-PM, and none of which was an Apply.
+# "product growth"/"product strategy" stay so "Product Growth Manager" (Apply, fit 92)
+# is still collected.
+#
+# Dropped earlier, for the same reason: "business development manager", "bdm",
+# "category manager", "category head" — sales and merchandising titles.
 _PM_EVAL_TITLE_RE = re.compile(
     r"(?<![a-z])(" + "|".join(re.escape(kw) for kw in PM_EVAL_TITLE_KEYWORDS) + r")(?![a-z])",
     re.I,
