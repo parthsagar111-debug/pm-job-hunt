@@ -2,11 +2,20 @@ name: PM Eval — India Jobs
 
 on:
   workflow_dispatch:   # triggered externally by cron-job.org via GitHub API
+    inputs:
+      time_range:
+        description: 'How far back to scrape - 24h for scheduled runs, week for a 7-day backfill.'
+        required: false
+        default: '24h'
+        type: choice
+        options:
+          - 24h
+          - week
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120   # 45 fits a 24h run; a 7-day backfill needs the headroom
 
     steps:
       - name: Checkout repo
@@ -38,4 +47,6 @@ jobs:
           # secret because this repo is public.
           CANDIDATE_PROFILE:           ${{ secrets.CANDIDATE_PROFILE }}
           NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
+          # Absent on the scheduled runs (cron-job.org sends no inputs), so they stay 24h.
+          TIME_RANGE:                  ${{ inputs.time_range || '24h' }}
         run: python pm_eval_hosted.py

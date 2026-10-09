@@ -25,7 +25,7 @@ import core_eval_hosted as core
 from core_eval_hosted import (
     SOURCES, SOURCE_ICONS,
     sort_newest_first,
-    within_24hrs, evaluate_batch, print_token_report,
+    within_24hrs, within_week, evaluate_batch, print_token_report,
     SEARCH_KEYWORD, JobCollector, LI_LIMITER, is_pm_eval_role,
 )
 from candidate_profile import load_candidate_profile
@@ -35,6 +35,11 @@ from ntfy_notify import run_summary
 from datetime import datetime
 
 SPREADSHEET_ID = os.environ.get("PM_EVAL_SPREADSHEET_ID", "")
+
+# "24h" for the scheduled half-hourly runs, "week" for a one-off 7-day backfill.
+# Week mode also turns on LinkedIn pagination — see fetch_linkedin_multi for why the
+# 24h path deliberately does not.
+TIME_RANGE = (os.environ.get("TIME_RANGE") or "24h").strip().lower()
 
 # A source has to contribute at least this many jobs before its garbage/thin share
 # means anything. An incremental run can bring in ONE Hirist job; if the model calls
@@ -71,13 +76,17 @@ def _print_jd_quality_summary(jobs: list) -> None:
 def main() -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*55}")
-    print(f"  PM EVAL (HOSTED) — 24h catch-up")
+    print(f"  PM EVAL (HOSTED) — {'7-day backfill' if TIME_RANGE == 'week' else '24h catch-up'}")
     print(f"  [{now}]")
     print(f"  Sources: LinkedIn · Naukri · Hirist · IIMJobs")
     print(f"{'='*55}")
 
     if not SPREADSHEET_ID:
         print("  ERROR: PM_EVAL_SPREADSHEET_ID env var not set. Exiting.")
+        sys.exit(1)
+
+    if TIME_RANGE not in ("24h", "week"):
+        print(f"  ERROR: TIME_RANGE must be '24h' or 'week', got {TIME_RANGE!r}. Exiting.")
         sys.exit(1)
 
     # Dedup MUST happen before evaluation — evaluating already-seen jobs burns
@@ -111,9 +120,14 @@ def main() -> None:
         icon = SOURCE_ICONS.get(name, "🔔")
         print(f"\n{icon} [{name}]")
         try:
-            jobs = fetch_fn(SEARCH_KEYWORD, time_range="24h")
+            kwargs = {"time_range": TIME_RANGE}
+            if name == "LinkedIn" and TIME_RANGE == "week":
+                # ~300 per keyword instead of the search page's ~60.
+                kwargs.update(paginate=True, limit=2000)
+            jobs = fetch_fn(SEARCH_KEYWORD, **kwargs)
             if name != "LinkedIn":
-                jobs = [j for j in jobs if within_24hrs(j)]
+                fresh = within_week if TIME_RANGE == "week" else within_24hrs
+                jobs = [j for j in jobs if fresh(j)]
             before = collector.counts["kept"]
             for job in sort_newest_first(jobs):
                 collector.add(job, label=name)

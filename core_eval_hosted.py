@@ -670,16 +670,20 @@ LINKEDIN_KEYWORDS = [
     "Head of Product",
 ]
 
-def fetch_linkedin_multi(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list[dict]:
-    """keyword param ignored — uses LINKEDIN_KEYWORDS list internally."""
-    """Run multiple LinkedIn searches with different keywords, deduplicate."""
-    import random
+def fetch_linkedin_multi(keyword: str = SEARCH_KEYWORD, time_range: str = "24h",
+                         paginate: bool = False, limit: int = TOP_N) -> list[dict]:
+    """Run every keyword in LINKEDIN_KEYWORDS and deduplicate. `keyword` is ignored.
+
+    paginate=False (the scheduled 24h runs) returns the search page only, which
+    LinkedIn caps at ~60 per keyword. That cap is invisible and lossy on a busy day,
+    so a week-long backfill passes paginate=True and gets ~300 per keyword instead.
+    """
     all_hits = []
     seen_ids = set()
     for kw in LINKEDIN_KEYWORDS:
         print(f"    🔵 LinkedIn [{kw}]...", end=" ", flush=True)
         try:
-            jobs = fetch_linkedin(kw, time_range)
+            jobs = fetch_linkedin(kw, time_range, paginate=paginate, limit=limit)
             new  = 0
             for job in jobs:
                 if job["job_id"] not in seen_ids:
