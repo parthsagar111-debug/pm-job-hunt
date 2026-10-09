@@ -1248,6 +1248,9 @@ ANTHROPIC_URL   = "https://api.anthropic.com/v1/messages"
 class ClaudeSchemaError(RuntimeError):
     """Claude replied, but not in the shape the caller demanded."""
 
+class ClaudeAPIError(RuntimeError):
+    """The Messages API refused the call. Carries the API's own error message."""
+
 class ClaudeEnumError(ClaudeSchemaError):
     """A required field held a value outside its enum. Carries the reply so a caller
     that can tolerate it (PM Eval) doesn't have to pay for the same failing call again."""
@@ -1328,7 +1331,22 @@ def claude_structured(prompt: str, tool_name: str, tool_description: str,
         print("    (1h cache TTL refused by the API; using the default 5-minute cache)")
         body["messages"][0]["content"][0]["cache_control"] = {"type": "ephemeral"}
         resp = _post(body)
-    resp.raise_for_status()
+
+    if not 200 <= resp.status_code < 300:
+        # raise_for_status() reports only the status and URL, which is how a run of 519
+        # jobs aborted at 340 on 2026-10-09 with three consecutive "400 Bad Request"
+        # and nothing to act on. The API's own error body says which it is — an
+        # exhausted credit balance, an over-long prompt, a bad request shape — and it
+        # echoes none of the prompt, so it is safe to print in a public log.
+        detail = (resp.text or "")[:300]
+        try:
+            err = (resp.json() or {}).get("error") or {}
+            if err.get("message"):
+                detail = f"{err.get('type', 'error')}: {err['message']}"
+        except ValueError:
+            pass
+        raise ClaudeAPIError(f"HTTP {resp.status_code} from the Messages API — {detail}")
+
     data = resp.json()
 
     usage = data.get("usage", {}) or {}
