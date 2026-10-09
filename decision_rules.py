@@ -30,6 +30,13 @@ cannot label reliably:
   times and the model called it apm/fit-45 five times and pm/fit-62 five times — the
   identical role, half Skipped and half not, on a label that flips. A Zepto PM role
   (core, fit 62, no blockers) was Skipped on this alone.
+
+  Softening that alone was wrong in the other direction: the 2026-10-09 backfill put
+  29 genuine associate postings ("Associate Product Manager @ BigBasket", "APM -
+  toolkits") into Maybe. The model's label conflated two things. The published TITLE
+  now settles it — title_is_junior, computed in code, rejects an associate posting,
+  while the model's "apm" on an ordinary PM title only caps the outcome at Maybe.
+  Of the 41 jobs it called apm that day, 29 had a junior title and 12 did not.
 - The non_core fit floor was 50, which sits between two adjacent steps of the model's
   own fit vocabulary (… 35, 42, 45, 48, 50, 62 …). The same role has been seen to
   swing 37 points between runs, so a 2-point gap cannot be a tab boundary.
@@ -110,6 +117,13 @@ def decide(features: dict, cfg: dict = CONFIG) -> tuple[str, str]:
     unreadable JD is checked before is_pm_role, because "not a PM role" derived
     from a category menu is not a finding.
     """
+    # 0. The published title says associate/junior/intern. Checked before anything
+    #    else, including the JD: it is computed in code from the scraped title, so it
+    #    holds even when the JD never loaded. IIMJobs and Hirist JDs fail often enough
+    #    that leaving this until after rule 1 would park associate postings in Maybe.
+    if features.get("title_is_junior"):
+        return "Skip", ""
+
     # 1. Nothing trustworthy was read — never Skip on an absence of evidence, and
     #    don't trust this reply's blockers or title reading either.
     if features.get("jd_quality") in _UNREADABLE_JD:
@@ -156,7 +170,8 @@ def _classify(features: dict, cfg: dict) -> tuple[str, list]:
     if blockers & CATEGORICAL_BLOCKERS:
         return "Skip", notes
 
-    # 4. An internship is unambiguous; "associate PM" is a judgment call (see decide).
+    # 4. The model read it as an internship. The published title is handled in
+    #    decide() as rule 0, before the JD check.
     if get("title_level") == "intern":
         return "Skip", notes
 

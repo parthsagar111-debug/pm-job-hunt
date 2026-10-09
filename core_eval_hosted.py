@@ -1158,6 +1158,29 @@ VALID_BLOCKERS = {
 }
 
 
+# A posting whose own TITLE says associate/assistant/junior/trainee is aimed well
+# below 9+ years, and that is not a judgment call — it is the words the employer
+# published. The model's title_level is not used for this: on 2026-10-09 it labelled
+# 41 jobs "apm", of which only 29 had a junior title; the other 12 were ordinary PM
+# titles ("Product Manager @ Zepto", "Growth Manager @ FRND") where it had read an
+# "Associate Product Manager" line out of the JD body.
+#
+# "Associate Director/VP/Principal/Partner" is senior and must not match, so a leading
+# bare "Associate" excludes those. "Assistant Manager" is deliberately NOT here: in
+# India that band runs well into mid-level.
+_JUNIOR_TITLE_RE = re.compile(
+    r"\b(?:associate|assistant)\s+(?:technical\s+)?product\b"
+    r"|\bapm\b"
+    r"|\b(?:junior|jr\.?|trainee|graduate|intern|internship|entry[-\s]level|fresher)\b"
+    r"|^associate\b(?!\s*[-,]?\s*(?:director|vice|vp|principal|partner|general))",
+    re.I)
+
+
+def title_says_junior(title: str) -> bool:
+    """True when the published title itself is an associate/junior/intern posting."""
+    return bool(_JUNIOR_TITLE_RE.search(" ".join((title or "").split())))
+
+
 def build_feature_prompt() -> str:
     """Profile + definitions + few-shots. Never log the result — it embeds the profile."""
     from candidate_profile import load_candidate_profile
@@ -1584,6 +1607,9 @@ def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
     # Local evidence wins: the model can't talk us out of what we can measure.
     if not jd_text or is_garbage_jd(jd_text):
         features["jd_quality"] = "garbage"
+
+    # Computed here, never asked of the model — the published title is a fact.
+    features["title_is_junior"] = title_says_junior(job.get("title", ""))
 
     return features, jd_text
 
