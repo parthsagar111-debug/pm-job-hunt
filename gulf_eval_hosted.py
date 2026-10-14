@@ -30,7 +30,7 @@ import random
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core_eval_hosted import (
-    fetch_linkedin, evaluate_batch, JobCollector, LI_LIMITER,
+    fetch_linkedin, evaluate_batch, JobCollector, LI_LIMITER, LI_SWEEP_RATE,
 )
 from sheets_writer import save_eval_jobs, load_seen_urls
 from ntfy_notify import run_summary
@@ -235,6 +235,10 @@ def main() -> None:
     if not SPREADSHEET_ID:
         print("  ERROR: GULF_SPREADSHEET_ID env var not set. Exiting.")
         sys.exit(1)
+
+    # Ten locations in one run gets this IP throttled at the full rate; see
+    # LI_SWEEP_RATE for the measurements.
+    LI_LIMITER.retarget(LI_SWEEP_RATE)
 
     # Dedup before evaluation — evaluating already-seen jobs burns Claude API tokens.
     try:

@@ -45,7 +45,7 @@ import requests
 
 from core_eval_hosted import (
     _li_get_with_retry, _parse_li_cards, _LI_TPR, _load_api_key, claude_structured,
-    fetch_jd_guest, JobCollector, LI_LIMITER,
+    fetch_jd_guest, JobCollector, LI_LIMITER, LI_SWEEP_RATE,
 )
 from gulf_eval_hosted import is_gulf_location
 from sponsor_registry import SponsorRegistry
@@ -290,6 +290,10 @@ def main() -> None:
         print("  ERROR: GLOBAL_VISA_SPREADSHEET_ID env var not set. Exiting.")
         sys.exit(1)
     _load_api_key()   # fail fast if the key is missing
+
+    # Twelve countries in one run gets this IP throttled at the full rate; see
+    # LI_SWEEP_RATE for the measurements.
+    LI_LIMITER.retarget(LI_SWEEP_RATE)
 
     try:
         # Both tabs: a job already logged as "no sponsorship" shouldn't be

@@ -321,6 +321,18 @@ LI_MAX_EXTRA_PAGES = 25   # paginate=True only — LinkedIn serves 10 results pe
 # One global bucket across every LinkedIn call spends that budget evenly.
 LI_TARGET_RATE = 1.0    # requests/second, the measured ceiling
 LI_MIN_RATE    = 0.25   # floor when LinkedIn pushes back
+
+# A feed that searches ONE location sustains the full rate: PM Eval logs 0-1 rate
+# limits across 120-683 requests a run. The multi-location sweeps do not. On
+# 2026-10-14 Gulf (10 locations) was throttled on 82 of 217 requests and Global Visa
+# (12 countries) on 343 of 907, both pinned at the 0.25 floor and never recovering —
+# and every 429 costs a retry wait of 30s or more. Global Visa spent roughly 2.9 of
+# its 5 hours on those penalties and still classified only 412 of 1,080 jobs, losing
+# France and Poland entirely to failed searches.
+#
+# Pacing slower from the start is far cheaper than earning the penalties: those same
+# 907 requests at 0.5 req/s are about 30 minutes of pacing.
+LI_SWEEP_RATE  = 0.5    # multi-location feeds: Gulf, Global Visa
 LI_JITTER      = 0.15   # ± fraction, so the pattern isn't a metronome
 
 class RateLimiter:
@@ -349,6 +361,13 @@ class RateLimiter:
         interval   = (1.0 / self.rate) * random.uniform(1 - LI_JITTER, 1 + LI_JITTER)
         self._next = now + interval
         self.requests += 1
+
+    def retarget(self, rate: float) -> None:
+        """Change the starting rate and the ceiling. Call before the first request:
+        it is the pacing a whole run is held to, not a mid-run correction."""
+        self.target = rate
+        self.rate   = rate
+        print(f"  [rate] pacing LinkedIn at {rate:.2f} req/s")
 
     def penalize(self):
         self.blocks += 1
