@@ -1,1 +1,2 @@
 pytest
+pyyaml   # tests/test_feed_defaults.py reads the workflow files

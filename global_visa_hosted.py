@@ -22,7 +22,7 @@ Required environment variables (set as GitHub Actions secrets):
   GLOBAL_VISA_SPREADSHEET_ID    — Google Sheet ID for this script's output
   NTFY_TOPIC                    — your ntfy topic name
 Optional:
-  TIME_RANGE                    — "24h" (default) or "week"
+  TIME_RANGE                    — "week" (default) or "24h"
 
 Sizing, from the 2026-09-17 probe of one 24h window (see git history, branch
 probe/global-visa): 2,575 product roles worldwide → 426 JDs mentioning visa
@@ -53,7 +53,9 @@ from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS, TAB_NO_S
 from ntfy_notify import push
 
 SPREADSHEET_ID = os.environ.get("GLOBAL_VISA_SPREADSHEET_ID", "")
-TIME_RANGE     = (os.environ.get("TIME_RANGE") or "24h").strip().lower()
+# This feed is run by hand, not on a schedule, so a 7-day window is the sensible
+# default: between two manual runs there is no "since yesterday" to speak of.
+TIME_RANGE     = (os.environ.get("TIME_RANGE") or "week").strip().lower()
 MAX_RUNTIME_S  = 5 * 3600   # GitHub's job cap is 6h — stop early and still save
 T0             = time.time()
 

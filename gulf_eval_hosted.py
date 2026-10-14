@@ -18,7 +18,7 @@ Required environment variables (set as GitHub Actions secrets):
   GULF_SPREADSHEET_ID           — Google Sheet ID for this script's output
   NTFY_TOPIC                    — your ntfy topic name
 Optional:
-  TIME_RANGE                    — "24h" (default) or "week" for a 7-day backfill
+  TIME_RANGE                    — "week" (default) or "24h"
 """
 
 import sys
@@ -37,7 +37,9 @@ from ntfy_notify import run_summary
 from datetime import datetime
 
 SPREADSHEET_ID = os.environ.get("GULF_SPREADSHEET_ID", "")
-TIME_RANGE     = (os.environ.get("TIME_RANGE") or "24h").strip().lower()
+# This feed is run by hand, not on a schedule, so a 7-day window is the sensible
+# default: between two manual runs there is no "since yesterday" to speak of.
+TIME_RANGE     = (os.environ.get("TIME_RANGE") or "week").strip().lower()
 
 # ─────────────────────────────────────────────
 # SEARCHES
