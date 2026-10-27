@@ -227,9 +227,14 @@ def main() -> None:
         print("  Aborting before scraping — nothing to evaluate with.")
         sys.exit(1)
 
-    # Ten locations in one run gets this IP throttled at the full rate; see
-    # LI_SWEEP_RATE for the measurements.
-    LI_LIMITER.retarget(LI_SWEEP_RATE)
+    # Only for a 7-day window. The 0.5 rate was measured on week sweeps — 907 requests
+    # with 343 rate-limited — where the 429 penalties cost more than the pacing. A 24h
+    # window is a fraction of that volume and sustained 1.0 fine: Global Visa's 24h runs
+    # took ~40 minutes before this was applied unconditionally on 2026-10-14, and 1h32m+
+    # after. Pacing every run for the worst case penalised the common one, and because
+    # retarget() also lowers the ceiling, the limiter could no longer recover past 0.5.
+    if TIME_RANGE == "week":
+        LI_LIMITER.retarget(LI_SWEEP_RATE)
 
     # Dedup before evaluation — evaluating already-seen jobs burns Claude API tokens.
     try:

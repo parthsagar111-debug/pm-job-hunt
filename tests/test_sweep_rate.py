@@ -106,3 +106,36 @@ def test_pm_eval_is_not_slowed_down(monkeypatch):
     with pytest.raises(SystemExit):
         pm.main()
     assert calls == []
+
+
+# ── the pacing is for week sweeps, not for every run (2026-10-27)
+@pytest.mark.parametrize("module", ["gulf_eval_hosted", "global_visa_hosted"])
+@pytest.mark.parametrize("window,paced", [("week", True), ("24h", False)])
+def test_only_a_week_window_is_paced_down(module, window, paced, monkeypatch):
+    """0.5 req/s was measured on week sweeps: 907 requests, 343 rate-limited, where
+    the 429 penalties cost more than the pacing. Applying it to every run doubled the
+    pacing on 24h windows for no benefit — a Global Visa 24h sweep that took ~40
+    minutes took over 1h32m — and because retarget() lowers the ceiling too, the
+    limiter could no longer climb back to 1.0."""
+    import importlib
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stub")
+    monkeypatch.setenv("TIME_RANGE", window)
+    mod = importlib.import_module(module)
+    importlib.reload(mod)
+    assert mod.TIME_RANGE == window
+
+    seen = []
+    monkeypatch.setattr(mod.LI_LIMITER, "retarget", lambda r: seen.append(r))
+    monkeypatch.setattr(mod, "SPREADSHEET_ID", "sheet")
+    if hasattr(mod, "load_candidate_profile"):
+        monkeypatch.setattr(mod, "load_candidate_profile", lambda: "x" * 300)
+    if hasattr(mod, "preflight_api_check"):
+        monkeypatch.setattr(mod, "preflight_api_check", lambda: None)
+    monkeypatch.setattr(mod, "load_seen_urls",
+                        lambda *a, **k: (_ for _ in ()).throw(SystemExit("stop")))
+    with pytest.raises(SystemExit):
+        mod.main()
+
+    assert seen == ([core.LI_SWEEP_RATE] if paced else [])
+    monkeypatch.delenv("TIME_RANGE")
+    importlib.reload(mod)
