@@ -121,7 +121,7 @@ def test_the_computed_flag_beats_a_contradicting_model_label():
 def test_extract_features_sets_the_flag_from_the_scraped_title(monkeypatch):
     """It must come from the job dict, never from the model's reply."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stub")
-    monkeypatch.setattr(core, "build_feature_prompt", lambda: "prefix")
+    monkeypatch.setattr(core, "build_feature_prompt", lambda *a, **k: "prefix")
     reply = {"is_pm_role": True, "title_level": "senior", "years_min": 5, "years_max": 8,
              "domain_class": "core", "hard_blockers": [], "requires_managing_pms": None,
              "stated_max_ctc_lpa": None, "jd_quality": "ok", "fit_score": 70,

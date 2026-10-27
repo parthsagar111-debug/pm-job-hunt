@@ -73,6 +73,12 @@ def test_each_sweep_feed_paces_itself_before_scraping(module, expected, monkeypa
     seen = []
     monkeypatch.setattr(mod.LI_LIMITER, "retarget", lambda r: seen.append(r))
     monkeypatch.setattr(mod, "SPREADSHEET_ID", "sheet")
+    # Gulf gained a profile load and an API preflight when it moved to the shared
+    # feature prompt; both run before the pacing call and would exit first here.
+    if hasattr(mod, "load_candidate_profile"):
+        monkeypatch.setattr(mod, "load_candidate_profile", lambda: "x" * 300)
+    if hasattr(mod, "preflight_api_check"):
+        monkeypatch.setattr(mod, "preflight_api_check", lambda: None)
 
     def stop(*a, **k):
         raise SystemExit("stop before any scraping")

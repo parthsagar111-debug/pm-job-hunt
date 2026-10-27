@@ -1126,14 +1126,14 @@ Input: Snapmint — "Senior Product Manager - Search" | 5-8 yrs | e-commerce sea
 ranking, and BNPL checkout funnel.
 Output: {{"is_pm_role": true, "title_level": "senior", "years_min": 5, "years_max": 8,
 "domain_class": "core", "hard_blockers": [], "requires_managing_pms": null,
-"stated_max_ctc_lpa": null, "jd_quality": "ok", "fit_score": 85,
+"jd_quality": "ok", "fit_score": 85,
 "reason": "E-commerce search and BNPL checkout match directly", "gap": "None"}}
 
 Input: Wrike — "Senior Product Manager (Platform & AI)" | 4+ years hands-on B2B SaaS platform
 and AI features for enterprise collaboration.
 Output: {{"is_pm_role": true, "title_level": "senior", "years_min": 4, "years_max": null,
 "domain_class": "adjacent", "hard_blockers": [], "requires_managing_pms": null,
-"stated_max_ctc_lpa": null, "jd_quality": "ok", "fit_score": 55,
+"jd_quality": "ok", "fit_score": 55,
 "reason": "Strong PM craft, but enterprise B2B SaaS is unfamiliar", "gap": "Enterprise SaaS platform ownership"}}
 
 Input: Cohesity — "Senior Product Manager" | enterprise storage, distributed filesystems,
@@ -1141,7 +1141,7 @@ backup infrastructure; CS degree required.
 Output: {{"is_pm_role": true, "title_level": "senior", "years_min": null, "years_max": null,
 "domain_class": "non_core", "hard_blockers": ["deep_infra_security_networking",
 "mandatory_cs_or_engineering_degree"], "requires_managing_pms": null,
-"stated_max_ctc_lpa": null, "jd_quality": "ok", "fit_score": 20,
+"jd_quality": "ok", "fit_score": 20,
 "reason": "Storage infrastructure product, no consumer overlap", "gap": "Distributed systems depth"}}
 
 Record your answer with the record_features tool."""
@@ -1163,15 +1163,16 @@ FEATURES_TOOL_SCHEMA = {
                            "description": "Only explicitly required blockers, never 'preferred'."},
         "requires_managing_pms": {"type": ["integer", "null"],
                                   "description": "Number of PMs to manage, if stated."},
-        "stated_max_ctc_lpa":    {"type": ["number", "null"],
-                                  "description": "Top of the stated CTC range in LPA, if stated."},
         "jd_quality":     {"type": "string", "enum": ["ok", "thin", "garbage"]},
         "fit_score":      {"type": "integer", "description": "0-100 fit, ignoring blockers."},
         "reason":         {"type": "string", "description": "Max 10 words."},
         "gap":            {"type": "string", "description": "Max 6 words, or 'None'."},
     },
+    # stated_max_ctc_lpa was dropped on 2026-10-27: it was non-null in 0 of 39 recent
+    # jobs and ~3 of 1,191 over a week, so it cost output tokens on every call to feed
+    # a rule that never fired.
     "required": ["is_pm_role", "title_level", "years_min", "years_max", "domain_class",
-                 "hard_blockers", "requires_managing_pms", "stated_max_ctc_lpa",
+                 "hard_blockers", "requires_managing_pms",
                  "jd_quality", "fit_score", "reason", "gap"],
 }
 
@@ -1181,7 +1182,33 @@ VALID_BLOCKERS = {
     "post_trade_aml_compliance_accounting", "manufacturing_erp_industrial",
     "specialist_hardware", "pure_supply_chain_logistics_saas",
     "mandatory_platform_certification",
+    # Gulf only. Both are absolute bars on a non-citizen applicant rather than
+    # judgment calls, so decision_rules treats them as categorical.
+    "nationals_only_or_localisation", "mandatory_arabic",
 }
+
+# Appended to the feature prompt for the Gulf feed. The India prompt says nothing about
+# relocation or language, and without this the model scored "needs a work visa" as a
+# gap on every Gulf role — which is the normal condition of the entire GCC job market.
+GULF_FEATURE_NOTE = """
+
+GULF CONTEXT (this listing is in the GCC)
+The candidate is an Indian citizen, in India, ready to relocate to the UAE, Saudi
+Arabia, Qatar, Bahrain, Oman or Kuwait on the employer-sponsored work visa that is
+standard across the GCC. Needing that visa is NEVER a gap and never a blocker, unless
+the listing explicitly rules out candidates who require sponsorship.
+
+Two extra hard_blockers apply here, and only when the listing states them:
+- nationals_only_or_localisation: restricted to local citizens — "UAE Nationals only",
+  "Emiratisation", "Saudi nationals only", "Saudization", "Qatari/Kuwaiti/Omani/
+  Bahraini nationals only".
+- mandatory_arabic: Arabic listed among the requirements, including as part of a list
+  ("Fluency in English and Arabic"). Arabic as "preferred", "a plus" or "a bonus" is
+  NOT a blocker. A requirement to read or write Arabic counts; NLP, right-to-left
+  rendering or localisation work does not.
+
+A preference for candidates already in the country, or for immediate joiners, is not a
+blocker — the candidate can relocate."""
 
 
 # A posting whose own TITLE says associate/assistant/junior/trainee is aimed well
@@ -1207,10 +1234,15 @@ def title_says_junior(title: str) -> bool:
     return bool(_JUNIOR_TITLE_RE.search(" ".join((title or "").split())))
 
 
-def build_feature_prompt() -> str:
-    """Profile + definitions + few-shots. Never log the result — it embeds the profile."""
+def build_feature_prompt(region_note: str = "") -> str:
+    """Profile + definitions + few-shots, plus any regional appendix.
+
+    Never log the result — it embeds the profile. `region_note` is appended rather than
+    interpolated so the cached prefix stays byte-identical within a feed (the whole
+    block is one cache entry; a per-job difference would defeat the cache entirely).
+    """
     from candidate_profile import load_candidate_profile
-    return FEATURE_PROMPT_TEMPLATE.format(profile=load_candidate_profile())
+    return FEATURE_PROMPT_TEMPLATE.format(profile=load_candidate_profile()) + region_note
 
 
 def _load_api_key() -> str:
@@ -1540,16 +1572,6 @@ def _validate_features(payload: dict) -> dict:
                 raise ClaudeSchemaError(f"{field}={value} is out of range")
         out[field] = value
 
-    ctc = out.get("stated_max_ctc_lpa")
-    if ctc in ("", "null", "None"):
-        ctc = None
-    if ctc is not None:
-        try:
-            ctc = float(ctc)
-        except (TypeError, ValueError):
-            raise ClaudeSchemaError(f"stated_max_ctc_lpa={out.get('stated_max_ctc_lpa')!r} is not a number")
-    out["stated_max_ctc_lpa"] = ctc
-
     try:
         fit = int(out.get("fit_score"))
     except (TypeError, ValueError):
@@ -1574,7 +1596,8 @@ def _validate_features(payload: dict) -> dict:
     return out
 
 
-def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
+def extract_features(job: dict, jd_text: str | None = None,
+                     region_note: str = "") -> tuple[dict, str]:
     """(features, jd_text) for one job. Raises on any API/schema failure.
 
     Pass jd_text when it has already been fetched, so the JD isn't downloaded twice.
@@ -1610,7 +1633,7 @@ def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
             "\n".join(context_lines),
             # Everything static (profile + definitions + few-shots) is cached; only the
             # per-job lines above vary, so the prefix stays byte-identical across jobs.
-            cached_prefix=build_feature_prompt(),
+            cached_prefix=build_feature_prompt(region_note),
             tool_name="record_features",
             tool_description="Record the extracted facts about this job listing.",
             input_schema=FEATURES_TOOL_SCHEMA,
@@ -1640,11 +1663,25 @@ def extract_features(job: dict, jd_text: str | None = None) -> tuple[dict, str]:
     return features, jd_text
 
 
-def evaluate_job_features(job: dict, decider) -> dict:
+def evaluate_job_features(job: dict, decider, region_note: str = "") -> dict:
     """Feature extraction + the code-side decision, in the shape save_eval_jobs wants."""
+    # An associate/junior/intern posting is rejected on its published title alone
+    # (rule 0 in decide()), which needs neither the JD nor the model — so settle it
+    # before spending a LinkedIn request and an API call on it. Worth ~5% of calls.
+    #
+    # The row is still WRITTEN as a Skip. Dropping it outright would leave its URL out
+    # of the dedup set, and it would be re-collected and re-fetched every 30 minutes
+    # for as long as the posting stayed up.
+    if title_says_junior(job.get("title", "")):
+        decision, prefix = decider({"title_is_junior": True})
+        return {"decision": decision,
+                "reason": (prefix + "Associate/junior posting, rejected on the title").strip(),
+                "gap": "None", "jd": "",
+                "features": {"title_is_junior": True}}
+
     try:
         jd_text = fetch_jd_text(job)
-        features, jd_text = extract_features(job, jd_text)
+        features, jd_text = extract_features(job, jd_text, region_note)
     except Exception as e:
         print(f"    ⚠️  Feature extraction failed: {type(e).__name__}: {e}")
         # Error, never Skip: an Error row is filtered out before writing and retried.
@@ -1664,7 +1701,7 @@ def evaluate_job_features(job: dict, decider) -> dict:
 CONSECUTIVE_ERROR_LIMIT = 3  # abort early if the API is clearly down (bad key, no funds, outage)
 
 def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
-                   decider=None) -> tuple[list[dict], bool]:
+                   decider=None, region_note: str = "") -> tuple[list[dict], bool]:
     """
     Returns (evaluated_jobs, aborted).
     evaluated_jobs only contains jobs that got a real decision — jobs whose API
@@ -1684,7 +1721,7 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
         company = job.get("company", "")
         icon    = SOURCE_ICONS.get(job.get("source", ""), "🔔")
         print(f"  [{i}/{total}] {icon} 📄 {title} @ {company}...", end=" ", flush=True)
-        ev = (evaluate_job_features(job, decider) if decider
+        ev = (evaluate_job_features(job, decider, region_note) if decider
               else evaluate_job(job, prompt_template))
         job["evaluation"] = ev
         badge = {"Apply": "✅", "Maybe": "🤔", "Skip": "❌", "Error": "⚠️"}.get(ev["decision"], "—")
@@ -1701,7 +1738,7 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
                   f"jr={f.get('title_is_junior')} "
                   f"yrs={f.get('years_min')}-{f.get('years_max')} domain={f.get('domain_class')} "
                   f"fit={f.get('fit_score')} jd={f.get('jd_quality')} "
-                  f"ctc={f.get('stated_max_ctc_lpa')} mgmt={f.get('requires_managing_pms')} "
+                  f"mgmt={f.get('requires_managing_pms')} "
                   f"blockers={f.get('hard_blockers')}")
 
         if ev["decision"] == "Error":

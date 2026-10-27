@@ -31,7 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core_eval_hosted import (
     fetch_linkedin, evaluate_batch, JobCollector, LI_LIMITER, LI_SWEEP_RATE,
+    GULF_FEATURE_NOTE, preflight_api_check,
 )
+from candidate_profile import load_candidate_profile
+from decision_rules import decide
 from sheets_writer import save_eval_jobs, load_seen_urls
 from ntfy_notify import run_summary
 from datetime import datetime
@@ -152,45 +155,14 @@ def apply_arabic_override(jobs: list[dict]) -> int:
 # ─────────────────────────────────────────────
 # CLAUDE PROMPT
 # ─────────────────────────────────────────────
-GULF_EVAL_PROMPT = """You are a recruiter evaluating Gulf (GCC) job listings for a candidate based in India.
-Give an Apply / Maybe / Skip decision with a one-line reason.
-
-Use this distribution as a rough guide: ~20% Apply, ~35% Maybe, ~45% Skip.
-When in doubt between Apply and Maybe, pick Maybe. When in doubt between Maybe and Skip, pick Maybe.
-Only Skip when there is a clear disqualifying reason.
-
-Candidate Profile:
-- Title: Senior Product Manager, 9+ years experience
-- Domain: B2C consumer internet, D2C e-commerce, health & wellness, fintech, food-tech
-- Strengths: Funnel optimisation, A/B experimentation, AI-powered personalisation,
-  lifecycle engagement, retention, monetisation, SQL, Mixpanel, WebEngage, MoEngage
-- Education: MBA (Chetana Institute), BMS Marketing — no CS/B.Tech degree
-- Location: Mumbai, India — ready to relocate to the UAE, Saudi Arabia, Qatar, Bahrain, Oman or Kuwait
-- Visa: Indian citizen; will need the employer-sponsored work visa, which is standard in the GCC.
-  Do NOT treat "needs visa sponsorship" as a gap unless the listing explicitly rules it out.
-- Languages: English, Hindi — does not speak Arabic
-
-Apply if: title and seniority match, domain overlaps even partially, no hard blockers.
-Maybe if: title fits but domain is unfamiliar, or seniority is off but role is interesting —
-this includes cases where the role's stated experience range is lower or higher than the
-candidate's 9+ years. A numeric experience-range mismatch by itself is NEVER a Skip.
-Also Maybe if: the listing prefers candidates already in the country / immediate joiners,
-or lists Arabic as "preferred" / "a plus" rather than required.
-
-Hard Skip ONLY if:
-1. Restricted to local nationals — e.g. "UAE Nationals only", "Emiratisation", "Saudi nationals only",
-   "Saudization", "Qatari nationals", "Kuwaiti nationals", "Omani nationals", "Bahraini nationals"
-2. Arabic is required — this includes Arabic simply listed among the requirements
-   (e.g. "Fluency in English and Arabic", "Excellent communication in English & Arabic"),
-   not only when the word "required" is used. Only "preferred" / "a plus" / "bonus" is not a Skip.
-3. Explicitly requires B.Tech/CS degree (not just "preferred")
-4. Role title itself is explicitly junior — "Associate Product Manager" or "APM" in the title
-5. Domain is purely supply chain, warehouse ops, or clinical healthcare with no consumer product angle
-6. Role title is completely unrelated — project coordinator, account manager, program manager
-7. Clearly requires deep expertise in a domain with zero overlap (e.g. oil & gas engineering, defence)
-
-Record your answer with the record_decision tool: decision (Apply / Maybe / Skip),
-reason (max 15 words), gap (biggest gap, or "None")."""
+# GULF_EVAL_PROMPT was deleted on 2026-10-27. It asked the model for the decision
+# itself and carried all three causes of the 17.6% misclassification rate that the
+# India feed was overhauled to fix: a hardcoded candidate profile ("9+ years", a short
+# domain list) that drifted from the resume, a distribution quota (~20/35/45), and two
+# "when in doubt pick Maybe" lines. This feed now extracts features with the shared
+# prompt — which reads the profile from the CANDIDATE_PROFILE secret — and decides with
+# the same pure rule engine. Its Gulf-only policy lives in GULF_FEATURE_NOTE and in the
+# two categorical blockers nationals_only_or_localisation and mandatory_arabic.
 
 # ─────────────────────────────────────────────
 # FETCH
@@ -236,6 +208,25 @@ def main() -> None:
         print("  ERROR: GULF_SPREADSHEET_ID env var not set. Exiting.")
         sys.exit(1)
 
+    # Fail here, not 77 jobs in: without the profile every job is scored against
+    # nothing. Never printed — this repo is public.
+    try:
+        load_candidate_profile()
+        print("  Candidate profile: loaded from CANDIDATE_PROFILE")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        sys.exit(1)
+
+    # A dead key or an empty balance should cost seconds, not the 70-minute scrape
+    # this feed does before its first evaluation call.
+    try:
+        preflight_api_check()
+        print("  Anthropic API: reachable")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        print("  Aborting before scraping — nothing to evaluate with.")
+        sys.exit(1)
+
     # Ten locations in one run gets this IP throttled at the full rate; see
     # LI_SWEEP_RATE for the measurements.
     LI_LIMITER.retarget(LI_SWEEP_RATE)
@@ -261,7 +252,8 @@ def main() -> None:
         run_summary("Gulf PM Eval", 0, 0, 0)
         return
 
-    evaluated_jobs, aborted = evaluate_batch(all_jobs, GULF_EVAL_PROMPT)
+    evaluated_jobs, aborted = evaluate_batch(all_jobs, decider=decide,
+                                             region_note=GULF_FEATURE_NOTE)
 
     if not evaluated_jobs:
         print("\n  No jobs were successfully evaluated this run (API failures only).")

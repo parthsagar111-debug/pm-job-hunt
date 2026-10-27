@@ -133,9 +133,12 @@ def test_product_marketing_role_is_skipped():
                            fit_score=45)) == ("Skip", "")
 
 
-def test_low_stated_ctc_skips():
-    """Super Plastronics at 9 LPA — below the floor, whatever the fit."""
-    assert decide(features(stated_max_ctc_lpa=9, fit_score=90)) == ("Skip", "")
+def test_a_stated_salary_no_longer_decides_anything():
+    """Super Plastronics at 9 LPA used to Skip here. The feature was dropped on
+    2026-10-27: the model returned a number in 0 of 39 recent jobs and ~3 of 1,191
+    over a week, so it cost output tokens on every call for a rule that never fired.
+    A stray value in a feature dict must now be ignored, not crash."""
+    assert decide(features(stated_max_ctc_lpa=9, fit_score=90))[0] == "Apply"
 
 
 # ── rule ordering and the remaining branches
@@ -210,8 +213,9 @@ def test_thresholds_are_configurable():
     assert decide(features(domain_class="core", fit_score=55), loosened) == ("Apply", "")
 
 
-def test_ctc_at_the_floor_is_not_skipped():
-    assert decide(features(stated_max_ctc_lpa=CONFIG["MIN_CTC_LPA"], fit_score=70))[0] == "Apply"
+def test_the_ctc_threshold_is_gone_from_config():
+    """Nothing should read it, and leaving a dead knob invites someone to tune it."""
+    assert "MIN_CTC_LPA" not in CONFIG
 
 
 # ── Skip needs categorical evidence (2026-10-09). The features in these cases are

@@ -35,6 +35,9 @@ jobs:
           ANTHROPIC_API_KEY:           ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GULF_SPREADSHEET_ID:         ${{ secrets.GULF_SPREADSHEET_ID }}
+          # Needed since this feed moved to the shared feature prompt, which reads
+          # the candidate profile from this secret instead of hardcoding it.
+          CANDIDATE_PROFILE:           ${{ secrets.CANDIDATE_PROFILE }}
           NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
           # 'week' when run from the Actions tab with no choice made, and when the
           # API is called without inputs. This feed is no longer on a schedule.

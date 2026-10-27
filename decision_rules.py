@@ -49,10 +49,6 @@ written to Skip is never re-judged.
 """
 
 CONFIG = {
-    # Below this stated maximum CTC the job isn't worth an application. Only applies
-    # when the JD states a number; most don't.
-    "MIN_CTC_LPA": 15,
-
     # fit_score needed for Apply, by how close the domain is to the candidate's own.
     "FIT_APPLY_CORE": 65,
     "FIT_APPLY_ADJACENT": 80,
@@ -85,6 +81,12 @@ CATEGORICAL_BLOCKERS = {
     "clinical_or_payer_healthcare_ops",
     "manufacturing_erp_industrial",
     "specialist_hardware",
+    # Gulf only, and absolute: a non-citizen cannot become one, and the candidate does
+    # not speak Arabic. Neither is the "preferred, written like a rule" problem that
+    # put the others in ADVISORY_BLOCKERS — the Gulf prompt says in terms that
+    # "preferred" Arabic is not a blocker.
+    "nationals_only_or_localisation",
+    "mandatory_arabic",
 }
 
 # Blockers that only ever add a note. Each of these hangs on one line of a JD, and
@@ -206,10 +208,10 @@ def _classify(features: dict, cfg: dict) -> tuple[str, list]:
     if get("title_level") == "intern":
         return "Skip", notes
 
-    # 5. Stated pay below the floor.
-    ctc = get("stated_max_ctc_lpa")
-    if ctc is not None and ctc < cfg["MIN_CTC_LPA"]:
-        return "Skip", notes
+    # 5. (was: stated pay below a floor) Removed on 2026-10-27 along with the
+    #    stated_max_ctc_lpa feature — the model returned a number for it in 0 of 39
+    #    recent jobs and ~3 of 1,191 over a week, so it cost output tokens on every
+    #    call to feed a rule that effectively never fired.
 
     # 6. Stated experience ceiling. Only fires on numbers the JD actually states —
     #    the prompt forbids inferring years from title or seniority wording.

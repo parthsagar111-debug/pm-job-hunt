@@ -53,7 +53,10 @@ def _print_jd_quality_summary(jobs: list) -> None:
     confident-looking decision."""
     per_source = {}
     for job in jobs:
-        quality = (job.get("evaluation", {}).get("features", {}) or {}).get("jd_quality", "unknown")
+        feats = job.get("evaluation", {}).get("features", {}) or {}
+        if "jd_quality" not in feats:
+            continue        # rejected on its title before any JD was fetched
+        quality = feats["jd_quality"]
         bucket = per_source.setdefault(job.get("source", "(unknown)"), {})
         bucket[quality] = bucket.get(quality, 0) + 1
 
