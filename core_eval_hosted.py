@@ -245,6 +245,10 @@ def _li_get_with_retry(url: str):   # -> curl_cffi/requests Response | None
     Returns the response, or None. Every LinkedIn call in every feed goes through
     here, which is what makes one global request budget possible."""
     import urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # Already established that the IP is refused: fail instantly rather than spend
+    # another 30-79s discovering it again. Callers already handle None.
+    if LI_LIMITER.is_blocked():
+        return None
     for attempt in range(3):
         try:
             LI_LIMITER.acquire()
@@ -270,7 +274,11 @@ def _li_get_with_retry(url: str):   # -> curl_cffi/requests Response | None
             wait = 10 + random.uniform(0, 10)
             print(f"  [LinkedIn] error, retrying in {wait:.0f}s...")
             time.sleep(wait)
+    LI_LIMITER.record_giveup()
     print(f"  [LinkedIn] ERROR: gave up after 3 attempts (rate limited)")
+    if LI_LIMITER.is_blocked():
+        print(f"  [LinkedIn] {LI_LIMITER.giveups} requests refused in a row — this runner's IP "
+              f"is being blocked, not throttled. Giving up on LinkedIn for this run.")
     return None
 
 def _parse_li_cards(html: str) -> tuple[list[dict], set[str]]:
@@ -306,6 +314,17 @@ LI_MAX_EXTRA_PAGES = 25   # paginate=True only — LinkedIn serves 10 results pe
 # spent 49 pages for 251 listings and Germany 40 for 351 — the tail thins out while
 # every page still costs a request through a 0.5 req/s limiter.
 LI_MIN_NEW_PER_PAGE = 3
+
+# Consecutive requests that exhausted all three attempts and were still refused. One
+# is bad luck; this many in a row means LinkedIn is refusing this runner outright
+# rather than pacing it, and no client-side backoff recovers from that.
+#
+# On 2026-10-27 a Global Visa run spent 2h45m in that state: every request 429ing,
+# the limiter pinned at its 0.25 floor with nothing left to give, waits escalating
+# 39s -> 64s -> 79s per request. The day before, the same feed did 3,355 requests
+# with 2 rate-limited. The difference was the IP, not the pacing — so the run should
+# stop in minutes and say so, not grind to the 5-hour cap.
+LI_GIVEUP_LIMIT = 5
 
 # ─────────────────────────────────────────────
 # RATE LIMITING
@@ -357,6 +376,7 @@ class RateLimiter:
         self.requests = 0
         self.blocks   = 0
         self._clean   = 0
+        self.giveups  = 0      # consecutive requests refused after all three attempts
 
     def acquire(self):
         now  = time.time()
@@ -381,7 +401,16 @@ class RateLimiter:
         self.rate    = max(LI_MIN_RATE, self.rate / 2)
         print(f"  [rate] backing off to {self.rate:.2f} req/s after a 429")
 
+    def record_giveup(self) -> None:
+        """A request was refused after every attempt."""
+        self.giveups += 1
+
+    def is_blocked(self) -> bool:
+        """LinkedIn is refusing this runner, not merely pacing it."""
+        return self.giveups >= LI_GIVEUP_LIMIT
+
     def reward(self):
+        self.giveups = 0       # a success means we are being served again
         self._clean += 1
         if self._clean >= 20 and self.rate < self.target:
             self.rate   = min(self.target, self.rate * 1.25)
@@ -1745,6 +1774,11 @@ def evaluate_batch(jobs: list[dict], prompt_template: str | None = None,
     ok_jobs = []
     consecutive_errors = 0
     for i, job in enumerate(jobs, 1):
+        if LI_LIMITER.is_blocked():
+            print(f"  ⚠️  LinkedIn is refusing this runner — stopping after {i-1} of "
+                  f"{total} job(s). The rest will be retried on a later run.")
+            return ok_jobs, True
+
         title   = job.get("title", "")
         company = job.get("company", "")
         icon    = SOURCE_ICONS.get(job.get("source", ""), "🔔")
