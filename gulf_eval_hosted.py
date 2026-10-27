@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core_eval_hosted import (
     fetch_linkedin, evaluate_batch, JobCollector, LI_LIMITER, LI_SWEEP_RATE,
+    print_token_report,
     GULF_FEATURE_NOTE, preflight_api_check,
 )
 from candidate_profile import load_candidate_profile
@@ -277,6 +278,7 @@ def main() -> None:
     print(f"\n{'='*55}")
     print(f"  Done. Apply: {n_apply}  Maybe: {n_maybe}  Skip: {n_skip}")
     print(f"  Rate: {LI_LIMITER.summary()}")
+    print_token_report(len(evaluated_jobs))
     if aborted:
         print("  NOTE: run was aborted early due to repeated API errors — some jobs untouched, will retry next run.")
     print(f"{'='*55}\n")

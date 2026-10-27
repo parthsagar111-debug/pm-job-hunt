@@ -45,7 +45,7 @@ import requests
 
 from core_eval_hosted import (
     _li_get_with_retry, _parse_li_cards, _LI_TPR, _load_api_key, claude_structured,
-    fetch_jd_guest, JobCollector, LI_LIMITER, LI_SWEEP_RATE,
+    fetch_jd_guest, JobCollector, LI_LIMITER, LI_SWEEP_RATE, print_token_report,
     LI_MAX_EXTRA_PAGES, LI_MIN_NEW_PER_PAGE,
 )
 from gulf_eval_hosted import is_gulf_location
@@ -255,7 +255,6 @@ VISA_TOOL_SCHEMA = {
     "required": ["visa", "evidence"],
 }
 
-USAGE = Counter()
 
 def classify(job: dict, excerpt: str) -> tuple[str, str]:
     """Returns (YES|CONDITIONAL|NO|ERROR, evidence). ERROR is never written to the
@@ -265,15 +264,13 @@ def classify(job: dict, excerpt: str) -> tuple[str, str]:
     last_err = ""
     for attempt in range(3):
         try:
-            payload, usage = claude_structured(
+            payload, _usage = claude_structured(
                 CLASSIFY_PROMPT + "\n\n" + context,
                 tool_name="record_visa",
                 tool_description="Record whether this listing offers visa sponsorship.",
                 input_schema=VISA_TOOL_SCHEMA,
                 max_tokens=200,
             )
-            USAGE["input_tokens"]  += usage.get("input_tokens", 0)
-            USAGE["output_tokens"] += usage.get("output_tokens", 0)
             return payload["visa"], payload["evidence"]
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
@@ -369,7 +366,6 @@ def main() -> None:
         if i % 200 == 0:
             print(f"  … {i}/{len(jobs)} JDs done, {len(keepers)} sponsoring so far", flush=True)
 
-    cost = USAGE["input_tokens"] / 1e6 * 1.0 + USAGE["output_tokens"] / 1e6 * 5.0  # Haiku 4.5 $1/$5 per MTok
     n_licensed = sum(1 for j in keepers + rejected if j.get("sponsor_licence"))
     print(f"\n  Rate: {LI_LIMITER.summary()}")
     print(f"  Sponsor registers: {n_licensed} job(s) at a licensed UK/NL sponsor, "
@@ -378,7 +374,8 @@ def main() -> None:
     print(f"  JDs: {jd_ok} fetched, {jd_fail} failed  |  "
           f"visa lines found: {sum(counts[k] for k in ('YES','CONDITIONAL','NO','ERROR'))}  |  "
           f"YES {counts['YES']}  CONDITIONAL {counts['CONDITIONAL']}  NO {counts['NO']}  "
-          f"ERROR {counts['ERROR']}  |  Haiku ${cost:.2f}")
+          f"ERROR {counts['ERROR']}")
+    print_token_report(jd_ok)
 
     n_new, n_no = ((0, 0) if not (keepers or rejected)
                    else save_visa_jobs(SPREADSHEET_ID, keepers, rejected))

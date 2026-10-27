@@ -69,3 +69,25 @@ def test_the_script_default_matches_its_workflow(module, expected, monkeypatch):
     mod = importlib.import_module(module)
     importlib.reload(mod)
     assert mod.TIME_RANGE == expected
+
+
+# ── every feed reports what it spent (2026-10-27)
+@pytest.mark.parametrize("module", ["pm_eval_hosted", "gulf_eval_hosted", "global_visa_hosted"])
+def test_each_feed_reports_its_tokens_and_cost(module):
+    """print_token_report was wired only into PM Eval, so a Gulf or Global run's spend
+    was invisible. Global also kept its own counter that summed input+output and was
+    blind to cache reads — two numbers that disagreed. One shared report now."""
+    import importlib
+    mod = importlib.import_module(module)
+    assert hasattr(mod, "print_token_report")
+    path = os.path.join(ROOT, module + ".py")
+    with io.open(path, encoding="utf-8") as fh:
+        body = fh.read()
+    assert "print_token_report(" in body
+
+
+def test_global_visa_has_no_second_cost_counter():
+    """Its hand-rolled USAGE counter ignored cache tokens entirely."""
+    with io.open(os.path.join(ROOT, "global_visa_hosted.py"), encoding="utf-8") as fh:
+        body = fh.read()
+    assert "USAGE" not in body
