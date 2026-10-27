@@ -1284,8 +1284,30 @@ TOKEN_USAGE = Counter()
 # Longest JD text sent to the model, in characters (~2,500 tokens). Only the extreme
 # tail is cut: requirements and blockers sit near the top, and the sheet still stores
 # the full JD. Sizes are logged per run so this can be tuned from data.
-JD_PROMPT_MAX_CHARS = 10_000
+JD_PROMPT_MAX_CHARS = 4_000
+
+# When a JD exceeds the cap, keep the head AND the tail rather than just the head.
+# Requirements, the stated experience range and education lines sit at the END of most
+# JDs, and those are precisely what years_min/years_max and hard_blockers are read
+# from. At the old 10,000-char cap only 10 of 512 JDs were truncated at all, so a
+# head-only slice cost nothing; at 4,000 it fires on most of them — the measured
+# average is 4,549 and p90 is 7,706 — which makes the strategy matter.
+JD_PROMPT_TAIL_CHARS = 1_400
+_JD_ELISION = "\n[... middle of the description omitted ...]\n"
+
 JD_SENT_CHARS: list = []
+
+
+def jd_for_prompt(jd_text: str) -> str:
+    """The JD as the model sees it: whole when short, otherwise head + tail.
+
+    The result is never longer than JD_PROMPT_MAX_CHARS.
+    """
+    jd_text = jd_text or ""
+    if len(jd_text) <= JD_PROMPT_MAX_CHARS:
+        return jd_text
+    head = JD_PROMPT_MAX_CHARS - JD_PROMPT_TAIL_CHARS - len(_JD_ELISION)
+    return jd_text[:head] + _JD_ELISION + jd_text[-JD_PROMPT_TAIL_CHARS:]
 
 
 def usage_cost_usd(usage: Counter | dict | None = None) -> float:
@@ -1626,7 +1648,7 @@ def extract_features(job: dict, jd_text: str | None = None,
 
     if jd_text and not is_garbage_jd(jd_text):
         JD_SENT_CHARS.append(len(jd_text))
-        context_lines.append("\nFull Job Description:\n" + jd_text[:JD_PROMPT_MAX_CHARS])
+        context_lines.append("\nFull Job Description:\n" + jd_for_prompt(jd_text))
     else:
         context_lines.append(
             "\n(No usable job description was retrieved — set jd_quality to "

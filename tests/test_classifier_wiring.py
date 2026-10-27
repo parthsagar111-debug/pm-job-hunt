@@ -320,7 +320,9 @@ def test_unusable_enum_is_filed_as_unverified_not_retried_forever(monkeypatch):
     assert "UNVERIFIED" in ev["reason"]
 
 
-def test_only_the_extreme_tail_of_a_jd_is_cut_from_the_prompt(monkeypatch):
+def test_the_middle_of_a_long_jd_is_cut_not_the_tail(monkeypatch):
+    """Since the cap came down to 4,000 on 2026-10-27 this fires on most JDs, so the
+    requirements block at the end has to survive — see tests/test_jd_prompt_cap.py."""
     monkeypatch.setenv(candidate_profile.ENV_VAR, "PROFILE " + "x" * 400)
     captured = _capture_request(monkeypatch)
     jd = "Z" * (core.JD_PROMPT_MAX_CHARS + 5000)
@@ -328,7 +330,8 @@ def test_only_the_extreme_tail_of_a_jd_is_cut_from_the_prompt(monkeypatch):
     core.extract_features({"title": "PM", "company": "ACME", "location": "Mumbai",
                            "source": "Naukri"}, jd_text=jd)
     sent = captured["messages"][0]["content"][1]["text"]
-    assert sent.count("Z") == core.JD_PROMPT_MAX_CHARS
+    assert sent.count("Z") == core.JD_PROMPT_MAX_CHARS - len(core._JD_ELISION)
+    assert "omitted" in sent                        # the gap is declared, not hidden
     assert core.JD_SENT_CHARS == [len(jd)]          # the run report records the FULL length
 
 
