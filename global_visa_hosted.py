@@ -46,6 +46,7 @@ import requests
 from core_eval_hosted import (
     _li_get_with_retry, _parse_li_cards, _LI_TPR, _load_api_key, claude_structured,
     fetch_jd_guest, JobCollector, LI_LIMITER, LI_SWEEP_RATE,
+    LI_MAX_EXTRA_PAGES, LI_MIN_NEW_PER_PAGE,
 )
 from gulf_eval_hosted import is_gulf_location
 from sponsor_registry import SponsorRegistry
@@ -132,17 +133,24 @@ def search(location: str, keyword: str = "Product Manager",
         return [], 0, 0
     hits, ids = _parse_li_cards(r.text)
     pages = 1
-    while pages < 101:
+    # Was `while pages < 101`, the only feed not bounded by LI_MAX_EXTRA_PAGES. On
+    # 2026-10-14 that let Canada take 49 pages and Germany 40, against a cap of 25
+    # everywhere else. Two bounds now: the shared page cap, and an early exit once a
+    # page stops paying for itself.
+    while pages <= LI_MAX_EXTRA_PAGES:
         r = _li_get_with_retry("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
                                f"?{q}&start={len(ids)}")
         if r is None:
             break
         page_hits, page_ids = _parse_li_cards(r.text)
-        if not page_ids - ids:
+        new = page_ids - ids
+        if not new:
             break
         ids |= page_ids
         hits.extend(page_hits)
         pages += 1
+        if len(new) < LI_MIN_NEW_PER_PAGE:
+            break
     return hits, len(ids), pages
 
 def collect_jobs(seen: set[str]) -> list[dict]:

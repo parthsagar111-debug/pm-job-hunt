@@ -301,6 +301,12 @@ def _parse_li_cards(html: str) -> tuple[list[dict], set[str]]:
 
 LI_MAX_EXTRA_PAGES = 25   # paginate=True only — LinkedIn serves 10 results per extra page
 
+# Stop paginating a location once a page stops paying for itself. Measured on the
+# 2026-10-14 global sweep: early pages returned ~8.8 new listings each, but Canada
+# spent 49 pages for 251 listings and Germany 40 for 351 — the tail thins out while
+# every page still costs a request through a 0.5 req/s limiter.
+LI_MIN_NEW_PER_PAGE = 3
+
 # ─────────────────────────────────────────────
 # RATE LIMITING
 # ─────────────────────────────────────────────
