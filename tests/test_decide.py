@@ -13,7 +13,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from decision_rules import (
-    CHECK_REQS_PREFIX, CONFIG, JUNIOR_TITLE_PREFIX, UNVERIFIED_PREFIX, decide,
+    CHECK_REQS_PREFIX, CONFIG, JUNIOR_TITLE_PREFIX, THIN_JD_PREFIX,
+    UNVERIFIED_PREFIX, decide,
 )
 
 
@@ -80,9 +81,50 @@ def test_garbage_jd_is_maybe_and_flagged():
     assert prefix == UNVERIFIED_PREFIX
 
 
-def test_thin_jd_is_also_unverified():
+def test_a_thin_jd_is_flagged_but_still_judged():
+    """"thin" is the model's opinion of a JD it read; "garbage" is a measured absence
+    of one. Treating them alike let 22 rows into Maybe on 2026-10-19, 13 of them
+    already judged non-PM, and held a Meta WhatsApp PM role out of Apply."""
     decision, prefix = decide(features(jd_quality="thin"))
-    assert (decision, prefix) == ("Maybe", UNVERIFIED_PREFIX)
+    assert decision == "Apply"
+    assert prefix == THIN_JD_PREFIX
+
+
+def test_a_thin_jd_no_longer_rescues_a_non_pm_role():
+    """Head of Product Marketing, VP of Product Analytics, Product Management
+    Coordinator — all sat in Maybe behind a thin JD."""
+    assert decide(features(jd_quality="thin", is_pm_role=False,
+                           domain_class="adjacent", fit_score=25)) == ("Skip", "")
+
+
+def test_the_meta_whatsapp_row():
+    """Product Manager, WhatsApp - India @ Meta Platforms: core, fit 65, thin JD.
+    It was written as UNVERIFIED into Maybe."""
+    decision, prefix = decide(features(jd_quality="thin", domain_class="core", fit_score=65))
+    assert decision == "Apply"
+    assert prefix == THIN_JD_PREFIX
+
+
+def test_a_thin_skip_is_not_given_the_flag():
+    """A Skip states a positive reason of its own, and the title-based rejections
+    never looked at the JD, so the flag would only mislead there."""
+    assert decide(features(jd_quality="thin", title_is_junior=True)) == ("Skip", "")
+    assert decide(features(jd_quality="thin", is_pm_role=False, fit_score=15,
+                           domain_class="non_core")) == ("Skip", "")
+
+
+def test_the_thin_flag_comes_before_the_other_caveats():
+    decision, prefix = decide(features(jd_quality="thin", title_level="apm",
+                                       hard_blockers=["mandatory_cs_or_engineering_degree"]))
+    assert decision == "Maybe"
+    assert prefix == THIN_JD_PREFIX + JUNIOR_TITLE_PREFIX + CHECK_REQS_PREFIX
+
+
+def test_garbage_is_still_treated_as_unread():
+    """is_garbage_jd() sets this from the text itself — under 300 characters, or a
+    known category-menu signature — so it really is an absence of evidence."""
+    assert decide(features(jd_quality="garbage", is_pm_role=False,
+                           fit_score=0)) == ("Maybe", UNVERIFIED_PREFIX)
 
 
 def test_product_marketing_role_is_skipped():

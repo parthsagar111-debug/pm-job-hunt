@@ -111,12 +111,32 @@ ADVISORY_BLOCKERS = {
 
 # Prefixed onto the reason so a row that was never really read is obvious in the sheet.
 UNVERIFIED_PREFIX = "UNVERIFIED JD — "
+# The model called the JD sparse. Not the same as unread — see _UNREADABLE_JD.
+THIN_JD_PREFIX = "THIN JD — "
 # The JD states a qualification the candidate may not hold. Not a rejection: verify it.
 CHECK_REQS_PREFIX = "CHECK REQS — "
 # Read as an APM/associate posting. Kept out of Apply, kept out of the bin.
 JUNIOR_TITLE_PREFIX = "JUNIOR TITLE — "
 
-_UNREADABLE_JD = {"garbage", "thin"}
+# Only "garbage", deliberately. The two labels are established in completely
+# different ways: is_garbage_jd() sets "garbage" from the text itself, overriding the
+# model, when the JD is under 300 characters or matches a known category-menu
+# signature — that is a proven absence of evidence. "thin" is the model's own opinion
+# of a JD that cleared the 300-character floor, and on 2026-10-19 the thin ones
+# averaged 2,000-8,000 characters. A 45-job live sample that day had NO JD under
+# 1,200 characters, and zero fetch failures across 19 runs, so a thin label is never
+# a fetch problem.
+#
+# Treating it as unread let it override everything below it. Of 22 rows written
+# UNVERIFIED that day, 13 had is_pm_role=False — Head of Product Marketing, VP of
+# Product Analytics, Product Management Coordinator — all plausibly correct
+# rejections, all parked in Maybe. It also held "Product Manager, WhatsApp - India @
+# Meta Platforms" (core, fit 65) out of Apply. And the label is unreliable in its own
+# right: Coforge's Senior Product Manager was called thin on a 1,402-character JD
+# that states an explicit roadmap-and-delivery remit.
+#
+# So a thin JD now goes through the normal rules and is merely flagged.
+_UNREADABLE_JD = {"garbage"}
 
 
 def decide(features: dict, cfg: dict = CONFIG) -> tuple[str, str]:
@@ -141,6 +161,11 @@ def decide(features: dict, cfg: dict = CONFIG) -> tuple[str, str]:
     decision, notes = _classify(features, cfg)
 
     if decision != "Skip":
+        # A sparse JD is still worth saying out loud on a row you are going to read.
+        # Not added to a Skip: those carry a positive reason of their own, and the
+        # title-based rejections never looked at the JD anyway.
+        if features.get("jd_quality") == "thin":
+            notes.insert(0, THIN_JD_PREFIX)
         # An APM posting is not worth an application, but the label is too unreliable
         # to reject on — so it caps the outcome instead of deciding it.
         if features.get("title_level") == "apm":
