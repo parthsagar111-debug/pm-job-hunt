@@ -1321,7 +1321,19 @@ JD_PROMPT_MAX_CHARS = 4_000
 # from. At the old 10,000-char cap only 10 of 512 JDs were truncated at all, so a
 # head-only slice cost nothing; at 4,000 it fires on most of them — the measured
 # average is 4,549 and p90 is 7,706 — which makes the strategy matter.
-JD_PROMPT_TAIL_CHARS = 1_400
+#
+# Widened from 1,400 on 2026-11-02. With the smaller tail, extraction of the two
+# fields that come from the requirements block fell measurably in the first run after
+# the cap dropped: years_min 84% -> 58% of jobs, years_max 58% -> 36%, while
+# hard_blockers held at ~30%. Rules 6 and 7 read those numbers, so losing them pushes
+# decisions onto fit alone. Blockers survived because they tend to appear earlier in
+# the requirements list than the experience line does.
+#
+# The cap itself is unchanged, so this costs nothing — it only moves the boundary
+# between the prose we drop and the requirements we keep. It stops at half the budget
+# so the head stays at least as large: domain_class and fit_score are read from the
+# opening, and rule 8 — the most common path to a decision — rests on both.
+JD_PROMPT_TAIL_CHARS = 2_000
 _JD_ELISION = "\n[... middle of the description omitted ...]\n"
 
 JD_SENT_CHARS: list = []

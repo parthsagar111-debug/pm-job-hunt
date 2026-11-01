@@ -81,3 +81,31 @@ def test_the_prompt_builder_uses_the_helper(monkeypatch):
     assert "HEAD content here" in sent["prompt"]
     assert "TAIL requirements here" in sent["prompt"]
     assert len(jd) > core.JD_PROMPT_MAX_CHARS      # the fixture really is oversized
+
+
+# ── the split was rebalanced toward requirements (2026-11-02)
+def test_the_tail_carries_the_requirements_block():
+    """After the cap dropped to 4,000, extraction of the two fields read from the END
+    of a JD fell in the first run: years_min 84% -> 58%, years_max 58% -> 36%, while
+    hard_blockers held at ~30%. Rules 6 and 7 read those numbers, so a tail too small
+    to reach the requirements pushes decisions onto fit alone."""
+    assert core.JD_PROMPT_TAIL_CHARS >= 2_000
+
+
+def test_the_head_is_never_smaller_than_the_tail():
+    """domain_class and fit_score come from the opening, and rule 8 — the most common
+    path to a decision — rests on both. Widening the tail must not starve them."""
+    head = core.JD_PROMPT_MAX_CHARS - core.JD_PROMPT_TAIL_CHARS - len(core._JD_ELISION)
+    assert head >= core.JD_PROMPT_TAIL_CHARS - len(core._JD_ELISION)
+
+
+def test_a_long_jd_keeps_an_experience_line_near_its_end():
+    """The concrete failure: '6-9 years' sitting past the old 1,400-char tail."""
+    jd = ("Senior Product Manager, Payments. Own the checkout roadmap.\n"
+          + "Responsibility filler line.\n" * 400
+          + "Requirements:\n- 6-9 years in product management\n"
+            "- Bachelor's degree in engineering or a related field\n")
+    out = core.jd_for_prompt(jd)
+    assert "6-9 years in product management" in out
+    assert "Own the checkout roadmap" in out
+    assert len(out) == core.JD_PROMPT_MAX_CHARS
