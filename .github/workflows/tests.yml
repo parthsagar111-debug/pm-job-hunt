@@ -8,7 +8,11 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # Pinned deliberately. On 2026-11-01 the ubuntu-latest label moved from 24.04 to
+    # 26.04 mid-day and every PM Eval run began failing: the Chrome install step used
+    # apt-key, which 26.04 no longer ships. A moving label means an image migration can
+    # break a working feed without a commit. Revisit before 24.04 leaves support.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
