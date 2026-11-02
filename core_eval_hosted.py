@@ -259,6 +259,7 @@ def _li_get_with_retry(url: str):   # -> curl_cffi/requests Response | None
                 wait = 30 + random.uniform(0, 15) + (attempt * 20)
                 print(f"  [LinkedIn] {r.status_code} rate-limited — waiting {wait:.0f}s "
                       f"(attempt {attempt+1}/3)...")
+                LI_LIMITER.record_backoff(wait)
                 time.sleep(wait)
                 continue
             r.raise_for_status()
@@ -277,8 +278,9 @@ def _li_get_with_retry(url: str):   # -> curl_cffi/requests Response | None
     LI_LIMITER.record_giveup()
     print(f"  [LinkedIn] ERROR: gave up after 3 attempts (rate limited)")
     if LI_LIMITER.is_blocked():
-        print(f"  [LinkedIn] {LI_LIMITER.giveups} requests refused in a row — this runner's IP "
-              f"is being blocked, not throttled. Giving up on LinkedIn for this run.")
+        print(f"  [LinkedIn] {LI_LIMITER.giveups} refused in a row after "
+              f"{LI_LIMITER.backoff_s/60:.0f} min of backoff — this runner's IP is being "
+              f"blocked, not throttled. Giving up on LinkedIn for this run.")
     return None
 
 def _parse_li_cards(html: str) -> tuple[list[dict], set[str]]:
@@ -325,6 +327,21 @@ LI_MIN_NEW_PER_PAGE = 3
 # with 2 rate-limited. The difference was the IP, not the pacing — so the run should
 # stop in minutes and say so, not grind to the 5-hour cap.
 LI_GIVEUP_LIMIT = 5
+
+# A block does not always arrive as a clean streak, and counting refusals does not
+# catch it either — they are too rare to form a meaningful rate. What separates a
+# useless run from a slow one is the time spent waiting on 429s:
+#
+#   2026-11-02 Global   10 give-ups   208 min of backoff   281 min, zero rows
+#   2026-10-27 Global    7 give-ups   120 min of backoff   cancelled, nothing saved
+#   2026-11-01 PM Eval   1 give-up     12 min of backoff   finished, wrote 25 rows
+#   2026-10-28 Global    0 give-ups     0 min of backoff   clean, 1,631 jobs
+#
+# So the budget is wall-clock, not a count. Past it the run is spending its life in
+# sleep() and will not produce enough to justify the remaining hours. The useful run
+# above sat at 12 minutes, the useless ones at 120 and 208, which is a wide gap to
+# place a threshold in.
+LI_BACKOFF_BUDGET_S = 30 * 60
 
 # ─────────────────────────────────────────────
 # RATE LIMITING
@@ -377,6 +394,7 @@ class RateLimiter:
         self.blocks   = 0
         self._clean   = 0
         self.giveups  = 0      # consecutive requests refused after all three attempts
+        self.backoff_s = 0.0   # cumulative seconds slept waiting on 429s
 
     def acquire(self):
         now  = time.time()
@@ -405,9 +423,19 @@ class RateLimiter:
         """A request was refused after every attempt."""
         self.giveups += 1
 
+    def record_backoff(self, seconds: float) -> None:
+        """Time spent asleep waiting on a 429."""
+        self.backoff_s += seconds
+
     def is_blocked(self) -> bool:
-        """LinkedIn is refusing this runner, not merely pacing it."""
-        return self.giveups >= LI_GIVEUP_LIMIT
+        """LinkedIn is refusing this runner, not merely pacing it.
+
+        Either a streak of outright refusals — a hard block, caught in minutes — or a
+        run that has spent more than LI_BACKOFF_BUDGET_S asleep on 429s, which is the
+        slow version of the same thing.
+        """
+        return (self.giveups >= LI_GIVEUP_LIMIT
+                or self.backoff_s >= LI_BACKOFF_BUDGET_S)
 
     def reward(self):
         self.giveups = 0       # a success means we are being served again
@@ -419,7 +447,7 @@ class RateLimiter:
 
     def summary(self) -> str:
         return (f"{self.requests} LinkedIn request(s), {self.blocks} rate-limited, "
-                f"final rate {self.rate:.2f} req/s")
+                f"{self.backoff_s/60:.0f} min in backoff, final rate {self.rate:.2f} req/s")
 
 LI_LIMITER = RateLimiter()
 

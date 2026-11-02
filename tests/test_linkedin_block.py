@@ -127,3 +127,42 @@ def test_a_healthy_run_is_untouched(limiter, monkeypatch):
     ok, aborted = core.evaluate_batch(jobs, decider=lambda f: ("Skip", ""))
     assert len(seen) == 1
     assert aborted is False
+
+
+# ── the slow version of a block: time, not a count (2026-11-02)
+def test_a_run_that_lives_in_backoff_is_blocked(limiter):
+    """Give-ups are too rare to form a useful rate — the 2026-11-02 run had 10 across
+    1,366 requests. What marked it out was 208 minutes spent asleep on 429s, against
+    12 minutes for a PM Eval run the same week that finished and wrote 25 rows."""
+    limiter.record_backoff(core.LI_BACKOFF_BUDGET_S - 1)
+    assert limiter.is_blocked() is False
+    limiter.record_backoff(1)
+    assert limiter.is_blocked() is True
+
+
+def test_a_slow_but_productive_run_is_left_alone(limiter):
+    """12 minutes of backoff is a slow run, not a blocked one."""
+    limiter.record_backoff(12 * 60)
+    assert limiter.is_blocked() is False
+
+
+def test_the_budget_separates_the_real_runs():
+    """Measured: 208 and 120 minutes produced nothing; 12 minutes produced 25 rows."""
+    assert 12 * 60 < core.LI_BACKOFF_BUDGET_S < 120 * 60
+
+
+def test_backoff_accumulates_across_requests(limiter, monkeypatch):
+    """Each 429 wait has to be recorded, or the budget never fills."""
+    monkeypatch.setattr(core, "_LI_GET", lambda *a, **k: _Resp())
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    core._li_get_with_retry("https://www.linkedin.com/jobs/view/1")
+    assert limiter.backoff_s > 0          # three attempts, each slept on
+    first = limiter.backoff_s
+    core._li_get_with_retry("https://www.linkedin.com/jobs/view/2")
+    assert limiter.backoff_s > first      # and it keeps adding up
+
+
+def test_the_summary_reports_time_lost(limiter):
+    """It is the number that explains a long run, so it belongs in the run report."""
+    limiter.record_backoff(9 * 60)
+    assert "9 min in backoff" in limiter.summary()
