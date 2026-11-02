@@ -67,6 +67,9 @@ def test_each_sweep_feed_paces_itself_before_scraping(module, expected, monkeypa
     """It must happen before the first request, or the first location pays full price."""
     import importlib
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stub")
+    # Both feeds default to 24h now, and only a week window is paced down, so the
+    # window has to be stated for this test to be about the pacing at all.
+    monkeypatch.setenv("TIME_RANGE", "week")
     mod = importlib.import_module(module)
     importlib.reload(mod)
 

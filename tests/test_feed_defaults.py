@@ -28,10 +28,14 @@ def workflow(name):
     return d, (d.get("on") or d.get(True))
 
 
+# All three default to 24h. Gulf and Global briefly defaulted to week, when they were
+# run only by hand; they are back on twice-daily crons, where a 7-day window re-scrapes
+# the same week on every run. Dedup discards it, but the LinkedIn requests are paid each
+# time — on 2026-11-02 that meant 295 of 1,366 requests refused and zero new rows.
 @pytest.mark.parametrize("name,expected", [
     ("pm_eval.yml", "24h"),
-    ("gulf_eval.yml", "week"),
-    ("global_visa.yml", "week"),
+    ("gulf_eval.yml", "24h"),
+    ("global_visa.yml", "24h"),
 ])
 def test_the_workflow_default_window(name, expected):
     d, triggers = workflow(name)
@@ -57,8 +61,8 @@ def test_both_windows_stay_offered(name):
 
 @pytest.mark.parametrize("module,expected", [
     ("pm_eval_hosted", "24h"),
-    ("gulf_eval_hosted", "week"),
-    ("global_visa_hosted", "week"),
+    ("gulf_eval_hosted", "24h"),
+    ("global_visa_hosted", "24h"),
 ])
 def test_the_script_default_matches_its_workflow(module, expected, monkeypatch):
     """A mismatch here is how a feed silently runs the wrong window locally, or if the

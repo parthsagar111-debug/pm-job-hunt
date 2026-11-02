@@ -41,9 +41,12 @@ from ntfy_notify import run_summary
 from datetime import datetime
 
 SPREADSHEET_ID = os.environ.get("GULF_SPREADSHEET_ID", "")
-# This feed is run by hand, not on a schedule, so a 7-day window is the sensible
-# default: between two manual runs there is no "since yesterday" to speak of.
-TIME_RANGE     = (os.environ.get("TIME_RANGE") or "week").strip().lower()
+# Default 24h. Both feeds are on a twice-daily cron, and a 7-day window there would
+# re-scrape the same week on every run — dedup discards it, but the LinkedIn
+# requests are paid each time, which is what drove the throttling on 2026-11-02
+# (295 of 1,366 requests refused, 281 minutes, zero new rows). Pass week explicitly
+# for a manual backfill.
+TIME_RANGE     = (os.environ.get("TIME_RANGE") or "24h").strip().lower()
 
 # ─────────────────────────────────────────────
 # SEARCHES

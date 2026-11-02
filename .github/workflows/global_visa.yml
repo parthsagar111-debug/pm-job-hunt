@@ -4,13 +4,13 @@ on:
   workflow_dispatch:   # run by hand from the Actions tab; no cron, no schedule
     inputs:
       time_range:
-        description: 'How far back to scrape. Defaults to the last 7 days (slow - a full sweep ran ~2h15m).'
+        description: 'How far back to scrape. 24h suits the twice-daily cron; week is a full sweep (slow).'
         required: false
-        default: 'week'
+        default: '24h'
         type: choice
         options:
-          - week
           - 24h
+          - week
 
 jobs:
   run:
@@ -39,8 +39,9 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GLOBAL_VISA_SPREADSHEET_ID:  ${{ secrets.GLOBAL_VISA_SPREADSHEET_ID }}
           NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
-          # 'week' when run from the Actions tab with no choice made, and when the
-          # API is called without inputs. This feed is no longer on a schedule.
-          TIME_RANGE:                  ${{ inputs.time_range || 'week' }}
+          # cron-job.org calls the API with no inputs, so this fallback is what the
+          # scheduled runs get. 24h matches a twice-daily cadence: a week window
+          # re-scrapes the same seven days on every run and dedup discards it.
+          TIME_RANGE:                  ${{ inputs.time_range || '24h' }}
           PYTHONUNBUFFERED:            '1'
         run: python global_visa_hosted.py
