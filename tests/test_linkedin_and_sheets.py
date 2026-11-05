@@ -95,8 +95,60 @@ def test_url_pattern_matches_every_source_we_write():
     for url in ["https://www.linkedin.com/jobs/view/4123456789",
                 "https://www.naukri.com/job-listings-product-manager-acme-12345",
                 "https://www.iimjobs.com/j/some-role-123456",
-                "https://www.hirist.tech/j/some-role-123456"]:
+                "https://www.hirist.tech/j/some-role-123456",
+                "https://wellfound.com/jobs/4451879-product-manager"]:
         assert sw._URL_PATTERN.match(url), url
+
+
+def test_the_dedup_filter_is_not_a_per_source_allowlist():
+    """The 2026-11-05 bug: _URL_PATTERN was an allowlist of scraped hosts, and
+    adding Wellfound did not add it. Every Wellfound URL in the Sheet was thrown
+    away on the dedup read, so the whole 30-day backlog was re-classified at full
+    API price and re-appended every run — FOXO 4451879 reached Apply twice.
+
+    A hand-maintained host list cannot be kept in step with SOURCES by a test that
+    also hand-maintains the list (the one above had the same gap). So the property
+    worth pinning is that an unrecognised host still dedups.
+    """
+    assert sw._URL_PATTERN.match("https://a-source-we-add-in-2027.com/jobs/1")
+    assert sw._URL_PATTERN.match("http://plain-http.example/jobs/1")
+
+
+def test_non_urls_in_the_url_column_are_still_ignored():
+    """Broadening the pattern must not make prose or a blank cell look like a job."""
+    for cell in ["", "URL", "n/a", "see notes", "—", "ftp://example.com/x"]:
+        assert not sw._URL_PATTERN.match(cell), cell
+
+
+def test_every_registered_source_dedups(monkeypatch):
+    """End to end over the real registry: a URL from each source, written to the
+    Sheet, must come back out of the dedup read."""
+    import core_eval_hosted as core
+    sample = {
+        "LinkedIn":       "https://www.linkedin.com/jobs/view/4123456789",
+        "Naukri":         "https://www.naukri.com/job-listings-pm-acme-12345",
+        "IIMJobs":        "https://www.iimjobs.com/j/some-role-123456",
+        "Hirist/IIMJobs": "https://www.hirist.tech/j/some-role-123456",
+        "Wellfound":      "https://wellfound.com/jobs/4451879-product-manager",
+        "Adzuna":         "https://www.adzuna.de/land/ad/123",   # Global Visa only
+    }
+    missing = [n for n, _ in core.SOURCES if n not in sample]
+    assert not missing, f"add a sample URL for {missing} so this test still covers it"
+
+    class WS:
+        title = "Apply"
+        def row_values(self, n):   return list(sw.HEADERS_EVAL)
+        def col_values(self, n):
+            assert n == sw.HEADERS_EVAL.index("URL") + 1
+            return ["URL"] + list(sample.values())
+
+    class SH:
+        def worksheet(self, tab):  return WS() if tab == sw.TAB_APPLY else (_ for _ in ()).throw(
+            __import__("gspread").WorksheetNotFound(tab))
+
+    seen = sw._load_seen_urls(SH())
+    for name, url in sample.items():
+        assert url in seen, f"{name} URLs would be re-evaluated and re-written every run"
 
 
 def test_jd_column_is_capped_but_written_for_every_decision():

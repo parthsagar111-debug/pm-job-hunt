@@ -85,12 +85,21 @@ def _jd_for_row(jd_text: str) -> str:
     actually capture it for every row, not just Apply/Maybe."""
     return jd_text[:JD_MAX_CHARS] if jd_text else ""
 
-_URL_PATTERN = re.compile(
-    r'https?://(www\.)?('
-    r'linkedin\.com/jobs/view/|naukri\.com/job-listings-|iimjobs\.com/j/|hirist\.tech/j/|'
-    r'adzuna\.[a-z.]+/'      # Adzuna redirect links, or dedup would re-add them daily
-    r')\S+'
-)
+# What counts as a dedup-able URL cell. This is deliberately ANY http(s) URL and
+# not a per-source allowlist.
+#
+# It used to be an allowlist of the hosts we scraped — linkedin, naukri, iimjobs,
+# hirist, adzuna. Adding Wellfound on 2026-11-05 did not add it here, so every
+# Wellfound URL already in the Sheet was discarded on the dedup read, which meant
+# the source's whole backlog was re-classified at full API price and re-appended
+# on every single run (FOXO 4451879 landed in Apply twice, 14:09 and 15:18).
+#
+# An allowlist is the wrong shape for this: forgetting an entry fails OPEN, costs
+# money silently, and the only symptom is duplicate rows. A cell that is a URL but
+# not a job link can at worst put an entry in `seen` that no scraped job ever
+# equals — harmless. So match on "is a URL" and let the column header (we read only
+# the one headed "URL") decide relevance.
+_URL_PATTERN = re.compile(r'https?://\S+')
 
 def _get_client() -> gspread.Client:
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
