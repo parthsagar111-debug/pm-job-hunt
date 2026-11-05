@@ -784,11 +784,153 @@ def fetch_linkedin_multi(keyword: str = SEARCH_KEYWORD, time_range: str = "24h",
             print(f"error: {e}")
     return all_hits
 
+
+# ─────────────────────────────────────────────
+# WELLFOUND (ex-AngelList Talent)
+# ─────────────────────────────────────────────
+# Measured 2026-11-05 across nine city pages: 185 unique listings, 82 passing the PM
+# title gate, 10 posted within 7 days, 45 within 30. Median age 27 days, so this is a
+# backlog plus a trickle rather than a daily source — see WELLFOUND_MAX_AGE_DAYS.
+#
+# Two things make it the best-behaved source here:
+#   - The JD arrives inline with the listing, so there is no per-job fetch at all and
+#     nothing for a rate limiter to throttle. Nine HTTP requests cover the whole run.
+#   - yearsExperienceMin/Max come through as numbers on roughly 60% of listings, which
+#     is the field the classifier struggles hardest to read out of prose.
+#
+# /jobs is useless to us: it returns zero listings unauthenticated because the search
+# renders client-side behind a session. The /role/l/<city> pages are server-rendered
+# with the data in __NEXT_DATA__, and need no cookie.
+WELLFOUND_CITIES = [
+    "india", "bangalore", "mumbai", "delhi", "gurgaon", "hyderabad", "pune", "noida",
+]
+# Chennai was dropped after the probe: 39 listings, every one already seen from another
+# city page. The pages overlap heavily, so more cities buy very little.
+
+WELLFOUND_MAX_AGE_DAYS = 30
+_WELLFOUND_URL = "https://wellfound.com/role/l/product-manager/{city}"
+
+# Wellfound's India pages leak listings from elsewhere — London, Seattle, New York and
+# San Francisco all appeared among the freshest roles in the probe. locationNames is
+# structured, so filter on it rather than on free text.
+_WF_INDIA = re.compile(
+    r"\b(india|bengaluru|bangalore|mumbai|delhi|ncr|gurugram|gurgaon|noida|pune|"
+    r"hyderabad|chennai|kolkata|ahmedabad|jaipur|chandigarh|kochi|coimbatore|indore|"
+    r"nagpur|thane|navi\s+mumbai|faridabad|ghaziabad|hsr\s+layout|andheri|whitefield|"
+    r"koramangala|powai|viman\s+nagar|hinjewadi|remote)\b",
+    re.I,
+)
+
+
+def _wellfound_company(apollo: dict, job_key: str) -> str:
+    """Company name for a listing, from the StartupResult that references it.
+
+    The job objects carry no company field; the link runs the other way, with each
+    StartupResult listing the jobs it owns under highlightedJobListings.
+    """
+    for key, node in apollo.items():
+        if not key.startswith("StartupResult:"):
+            continue
+        for ref in node.get("highlightedJobListings") or []:
+            if isinstance(ref, dict) and ref.get("__ref") == job_key:
+                return (node.get("name") or "").strip() or "Unknown"
+    return "Unknown"
+
+
+def fetch_wellfound(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> list[dict]:
+    """PM listings from Wellfound's public role pages.
+
+    `keyword` is ignored — the city pages are already role-scoped. `time_range` is
+    ignored too: a 24h window would return almost nothing (3 of 185 listings in the
+    probe), so the age cut is WELLFOUND_MAX_AGE_DAYS and URL dedup does the rest.
+    """
+    import json
+
+    hits, seen_ids = [], set()
+    cutoff = time.time() - WELLFOUND_MAX_AGE_DAYS * 86400
+
+    for city in WELLFOUND_CITIES:
+        url = _WELLFOUND_URL.format(city=city)
+        try:
+            r = _LI_GET(url, timeout=25)
+            if r.status_code != 200:
+                print(f"    wellfound [{city}]: HTTP {r.status_code}")
+                continue
+            tag = BeautifulSoup(r.text, "html.parser").find("script", id="__NEXT_DATA__")
+            if tag is None:
+                print(f"    wellfound [{city}]: no __NEXT_DATA__ on the page")
+                continue
+            apollo = (json.loads(tag.string)["props"]["pageProps"]
+                      .get("apolloState", {}).get("data", {}))
+        except Exception as e:
+            print(f"    wellfound [{city}]: {type(e).__name__}: {e}")
+            continue
+
+        before, stale, off_region = len(hits), 0, 0
+        for key, j in apollo.items():
+            if not key.startswith("JobListingSearchResult:"):
+                continue
+            job_id = str(j.get("id") or "")
+            if not job_id or job_id in seen_ids:
+                continue
+
+            live = j.get("liveStartAt")
+            if live and float(live) < cutoff:
+                stale += 1
+                continue
+
+            where = ", ".join(j.get("locationNames") or []) or (
+                "Remote" if j.get("remote") else "")
+            if not _WF_INDIA.search(where):
+                off_region += 1
+                continue
+
+            seen_ids.add(job_id)
+            slug = j.get("slug") or "job"
+            age_days = (time.time() - float(live)) / 86400 if live else None
+            hits.append({
+                "source": "Wellfound",
+                "job_id": "wf_" + job_id,
+                "title": (j.get("title") or "").strip(),
+                "company": _wellfound_company(apollo, key),
+                "location": where,
+                "posted": f"{age_days:.0f} days ago" if age_days is not None else "Recent",
+                "posted_dt": "",
+                "experience": "—",
+                "url": f"https://wellfound.com/jobs/{job_id}-{slug}",
+                # The JD travels with the listing; fetch_jd_text hands it straight back
+                # rather than making a second request.
+                "jd_inline": (j.get("description") or "").strip(),
+                "stated_experience": _wellfound_experience(j),
+            })
+        print(f"    wellfound [{city}]: +{len(hits) - before} "
+              f"({stale} older than {WELLFOUND_MAX_AGE_DAYS}d, {off_region} outside India)")
+        time.sleep(1)
+
+    print(f"  [Wellfound] {len(hits)} listing(s) across {len(WELLFOUND_CITIES)} page(s)")
+    return hits
+
+
+def _wellfound_experience(j: dict) -> str:
+    """The structured years range as the string the prompt's "Stated Experience" expects.
+
+    Worth passing through: the model reads years out of JD prose unreliably, and
+    Wellfound states it as a number on roughly 60% of listings.
+    """
+    lo, hi = j.get("yearsExperienceMin"), j.get("yearsExperienceMax")
+    if lo is None and hi is None:
+        return ""
+    if lo is not None and hi is not None:
+        return f"{lo} - {hi} yrs"
+    return f"{lo}+ yrs" if lo is not None else f"up to {hi} yrs"
+
+
 SOURCES = [
     ("LinkedIn",       fetch_linkedin_multi),
     ("Naukri",         fetch_naukri),
     ("Hirist/IIMJobs", fetch_hirist),
     ("IIMJobs",        fetch_iimjobs),
+    ("Wellfound",      fetch_wellfound),
 ]
 
 SOURCE_ICONS = {
@@ -796,6 +938,7 @@ SOURCE_ICONS = {
     "Naukri":         "🟠",
     "Hirist/IIMJobs": "🟣",
     "IIMJobs":        "🟤",
+    "Wellfound":      "🟡",
     "LinkedIn Gulf":  "🌴",
 }
 
@@ -1063,6 +1206,10 @@ def fetch_jd_text(job: dict) -> str:
             if not jd:
                 print(f"  ⚠️  JD fetch ({source}): guest endpoint returned nothing for {url}")
             return jd
+
+        elif source == "Wellfound":
+            # The JD came down with the listing — no second request to make.
+            return job.get("jd_inline", "")
 
         elif source in ("Hirist/IIMJobs", "IIMJobs"):
             return fetch_jd_infoedge(job)

@@ -138,7 +138,10 @@ def main() -> None:
                 # ~300 per keyword instead of the search page's ~60.
                 kwargs.update(paginate=True, limit=2000)
             jobs = fetch_fn(SEARCH_KEYWORD, **kwargs)
-            if name != "LinkedIn":
+            # Wellfound applies its own 30-day cut inside the fetcher: its listings run
+            # to a median age of 27 days, so a 24h filter would discard nearly all of
+            # them. URL dedup is what stops the backlog being re-read every run.
+            if name not in ("LinkedIn", "Wellfound"):
                 fresh = within_week if TIME_RANGE == "week" else within_24hrs
                 jobs = [j for j in jobs if fresh(j)]
             before = collector.counts["kept"]
