@@ -1,0 +1,38 @@
+name: Dedupe PM Eval Sheet (one-off repair)
+
+# Manual only — no cron trigger, by design. This repairs the duplicate rows left by
+# the _URL_PATTERN allowlist bug (fixed 2026-11-05); it is not part of the feed.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'false = report what would be deleted and change nothing. true = actually delete.'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # No Chrome step: this touches the Sheet only, it scrapes nothing.
+      - name: Install Python dependencies
+        run: pip install -r requirements_hosted.txt
+
+      - name: Dedupe
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PM_EVAL_SPREADSHEET_ID:      ${{ secrets.PM_EVAL_SPREADSHEET_ID }}
+          APPLY:                       ${{ inputs.apply }}
+        run: python dedupe_sheet.py
