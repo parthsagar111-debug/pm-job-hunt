@@ -2,9 +2,13 @@
 pm_eval_hosted.py — PM Job Alert (hosted / GitHub Actions version)
 ==================================================================
 Runs ONCE in 24-hour catch-up mode and exits.
-Scheduled externally: cron-job.org calls workflow_dispatch every 30 minutes.
+Scheduled externally: cron-job.org calls workflow_dispatch every 2 hours on
+weekdays and twice a day at weekends.
 
-Sources:  LinkedIn · Naukri · Hirist · IIMJobs
+Sources:  core_eval_hosted.SOURCES, printed by the banner at run time. Deliberately
+          not listed here — the copy that was, stayed on "LinkedIn · Naukri ·
+          Hirist · IIMJobs" for two days after Wellfound was added.
+          SOURCES_ONLY=<names> restricts a manual run to some of them.
 Output:   Google Sheet (Apply / Maybe / Skip tabs)
 Notify:   ntfy push notification after run
 
@@ -101,11 +105,22 @@ def _print_jd_quality_summary(jobs: list) -> None:
 # MAIN — single 24h run, then exit
 # ─────────────────────────────────────────────
 def main() -> None:
+    # Resolved before the banner so the banner can state what will ACTUALLY be
+    # scraped, and before the profile load, the API preflight and the dedup read so
+    # a typo in SOURCES_ONLY costs nothing.
+    sources = selected_sources()
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*55}")
     print(f"  PM EVAL (HOSTED) — {'7-day backfill' if TIME_RANGE == 'week' else '24h catch-up'}")
     print(f"  [{now}]")
-    print(f"  Sources: LinkedIn · Naukri · Hirist · IIMJobs")
+    # Derived from the registry, never hand-written. The hand-written version still
+    # read "LinkedIn · Naukri · Hirist · IIMJobs" two days after Wellfound was added
+    # and all through the run where Wellfound was the only source scraped — the same
+    # shape of bug as the dedup allowlist that omitted wellfound.com.
+    print(f"  Sources: {' · '.join(n for n, _ in sources)}"
+          + (f"  (SOURCES_ONLY set — {len(SOURCES) - len(sources)} skipped)"
+             if SOURCES_ONLY else ""))
     print(f"{'='*55}")
 
     if not SPREADSHEET_ID:
@@ -152,11 +167,6 @@ def main() -> None:
     # is_pm_eval_role (word boundaries, no BDM/category titles) applies to this feed
     # only — Gulf and Global keep the original is_pm_role gate inside _parse_li_cards.
     collector = JobCollector(seen_urls=seen, max_per_company=2, title_ok=is_pm_eval_role)
-
-    sources = selected_sources()
-    if SOURCES_ONLY:
-        print(f"  Sources: {', '.join(n for n, _ in sources)} only "
-              f"(SOURCES_ONLY set — {len(SOURCES) - len(sources)} source(s) skipped)")
 
     for name, fetch_fn in sources:
         icon = SOURCE_ICONS.get(name, "🔔")

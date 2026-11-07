@@ -1,7 +1,8 @@
 """
 core_eval_hosted.py — scraping + Claude eval engine (hosted/GitHub Actions version)
 =====================================================================================
-Sources: LinkedIn · Naukri · Hirist · IIMJobs
+Sources: the SOURCES registry below — not restated here, because a hand-written
+         copy of that list went stale twice (see the banner in pm_eval_hosted.py).
 Output:  Google Sheets (Apply / Maybe / Skip tabs)
 Notify:  ntfy push notification after each run
 
@@ -798,9 +799,25 @@ def fetch_linkedin_multi(keyword: str = SEARCH_KEYWORD, time_range: str = "24h",
 #   - yearsExperienceMin/Max come through as numbers on roughly 60% of listings, which
 #     is the field the classifier struggles hardest to read out of prose.
 #
-# /jobs is useless to us: it returns zero listings unauthenticated because the search
-# renders client-side behind a session. The /role/l/<city> pages are server-rendered
-# with the data in __NEXT_DATA__, and need no cookie.
+# The /role/l/<city> pages are server-rendered with the data in __NEXT_DATA__ and
+# need no cookie.
+#
+# ACCEPTED LIMITATION (Parth's call, 2026-11-07): these pages lag the real index by
+# roughly 1.4 days and carry NO same-day postings at any depth. Measured over 228
+# listings: freshest 1.4d, zero under a day. A role Parth could see on the logged-in
+# search that morning ("Founding Technical PM" at Xeliport, posted that day) was
+# absent from every page of every city. It should appear here a couple of days later.
+#
+# Do not "fix" this by reaching further into these pages — it is not a pagination or
+# sort problem, and it was checked:
+#   - no sort parameter changes what they return (?sort=recent/newest, ?sortBy, ?order)
+#   - /jobs unauthenticated DOES return 50 listings (under typename JobListing, not
+#     JobListingSearchResult — which is why an earlier probe wrongly read it as
+#     empty), but unfiltered: 2 of 50 were in India, ages ran 0.26d to 25d, and the
+#     nodes carry no description, so every JD would cost a second request.
+# The only route to same-day coverage is the authenticated search, which needs a live
+# Wellfound session cookie stored as a secret. Declined: not worth holding a
+# rotating credential for a source whose roles arrive here two days later anyway.
 WELLFOUND_CITIES = [
     "india", "bangalore", "mumbai", "delhi", "gurgaon", "hyderabad", "pune", "noida",
 ]
