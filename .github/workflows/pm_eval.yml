@@ -11,6 +11,11 @@ on:
         options:
           - 24h
           - week
+      sources_only:
+        description: 'Comma-separated source names for a one-off single-source run (e.g. Wellfound). Blank = all sources.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   run:
@@ -63,4 +68,6 @@ jobs:
           NTFY_TOPIC:                  ${{ secrets.NTFY_TOPIC }}
           # Absent on the scheduled runs (cron-job.org sends no inputs), so they stay 24h.
           TIME_RANGE:                  ${{ inputs.time_range || '24h' }}
+          # Also absent on the scheduled runs, so they keep scraping every source.
+          SOURCES_ONLY:                ${{ inputs.sources_only }}
         run: python pm_eval_hosted.py

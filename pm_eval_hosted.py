@@ -41,6 +41,30 @@ SPREADSHEET_ID = os.environ.get("PM_EVAL_SPREADSHEET_ID", "")
 # 24h path deliberately does not.
 TIME_RANGE = (os.environ.get("TIME_RANGE") or "24h").strip().lower()
 
+# Restrict the run to named sources, comma-separated, for a one-off manual run —
+# e.g. SOURCES_ONLY=Wellfound to re-read just that source's backlog without paying
+# LinkedIn's crawl or its JD fetches. Empty (the default, and what the crons send)
+# means every registered source.
+#
+# Unknown names abort rather than silently scraping nothing: a typo here would
+# otherwise look exactly like a quiet day.
+SOURCES_ONLY = [s.strip() for s in (os.environ.get("SOURCES_ONLY") or "").split(",") if s.strip()]
+
+
+def selected_sources() -> list:
+    """SOURCES, filtered by SOURCES_ONLY. Case-insensitive, registry order kept."""
+    if not SOURCES_ONLY:
+        return list(SOURCES)
+    known = {name.lower(): name for name, _ in SOURCES}
+    unknown = [s for s in SOURCES_ONLY if s.lower() not in known]
+    if unknown:
+        raise SystemExit(
+            f"  ERROR: SOURCES_ONLY names {unknown}, which is not a registered source.\n"
+            f"  Known sources: {', '.join(n for n, _ in SOURCES)}"
+        )
+    wanted = {s.lower() for s in SOURCES_ONLY}
+    return [(name, fn) for name, fn in SOURCES if name.lower() in wanted]
+
 # A source has to contribute at least this many jobs before its garbage/thin share
 # means anything. An incremental run can bring in ONE Hirist job; if the model calls
 # that single JD thin, a bare percentage test reads 100% and cries broken selectors.
@@ -129,7 +153,12 @@ def main() -> None:
     # only — Gulf and Global keep the original is_pm_role gate inside _parse_li_cards.
     collector = JobCollector(seen_urls=seen, max_per_company=2, title_ok=is_pm_eval_role)
 
-    for name, fetch_fn in SOURCES:
+    sources = selected_sources()
+    if SOURCES_ONLY:
+        print(f"  Sources: {', '.join(n for n, _ in sources)} only "
+              f"(SOURCES_ONLY set — {len(SOURCES) - len(sources)} source(s) skipped)")
+
+    for name, fetch_fn in sources:
         icon = SOURCE_ICONS.get(name, "🔔")
         print(f"\n{icon} [{name}]")
         try:
