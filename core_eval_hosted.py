@@ -808,6 +808,17 @@ WELLFOUND_CITIES = [
 # city page. The pages overlap heavily, so more cities buy very little.
 
 WELLFOUND_MAX_AGE_DAYS = 30
+
+# Each city page paginates, and page 1 is a small slice of what is there. Measured
+# 2026-11-07 over india/bangalore/mumbai: of 35 unique India PM listings inside the
+# 30-day window, only 11 were on page 1 — reading page 1 alone missed 69% of the
+# source, the Daloopa pair among them.
+#
+# The ordering is NOT strictly newest-first either, so depth is not just backlog: a
+# 1.4-day-old and a 2.1-day-old listing both sat on page 4. Five pages covers every
+# city's 30-day window with room to spare; the loop stops earlier on its own when a
+# page repeats what it has already seen.
+WELLFOUND_MAX_PAGES = 5
 _WELLFOUND_URL = "https://wellfound.com/role/l/product-manager/{city}"
 
 # Wellfound's India pages leak listings from elsewhere — London, Seattle, New York and
@@ -848,66 +859,83 @@ def fetch_wellfound(keyword: str = SEARCH_KEYWORD, time_range: str = "24h") -> l
 
     hits, seen_ids = [], set()
     cutoff = time.time() - WELLFOUND_MAX_AGE_DAYS * 86400
+    pages_read = 0
 
     for city in WELLFOUND_CITIES:
-        url = _WELLFOUND_URL.format(city=city)
-        try:
-            r = _LI_GET(url, timeout=25)
-            if r.status_code != 200:
-                print(f"    wellfound [{city}]: HTTP {r.status_code}")
-                continue
-            tag = BeautifulSoup(r.text, "html.parser").find("script", id="__NEXT_DATA__")
-            if tag is None:
-                print(f"    wellfound [{city}]: no __NEXT_DATA__ on the page")
-                continue
-            apollo = (json.loads(tag.string)["props"]["pageProps"]
-                      .get("apolloState", {}).get("data", {}))
-        except Exception as e:
-            print(f"    wellfound [{city}]: {type(e).__name__}: {e}")
-            continue
+        city_ids, stale, off_region = set(), 0, 0
+        before_city = len(hits)
 
-        before, stale, off_region = len(hits), 0, 0
-        for key, j in apollo.items():
-            if not key.startswith("JobListingSearchResult:"):
-                continue
-            job_id = str(j.get("id") or "")
-            if not job_id or job_id in seen_ids:
-                continue
+        for page in range(1, WELLFOUND_MAX_PAGES + 1):
+            url = _WELLFOUND_URL.format(city=city) + ("" if page == 1 else f"?page={page}")
+            try:
+                r = _LI_GET(url, timeout=25)
+                if r.status_code != 200:
+                    print(f"    wellfound [{city} p{page}]: HTTP {r.status_code}")
+                    break
+                tag = BeautifulSoup(r.text, "html.parser").find("script", id="__NEXT_DATA__")
+                if tag is None:
+                    print(f"    wellfound [{city} p{page}]: no __NEXT_DATA__ on the page")
+                    break
+                apollo = (json.loads(tag.string)["props"]["pageProps"]
+                          .get("apolloState", {}).get("data", {}))
+            except Exception as e:
+                print(f"    wellfound [{city} p{page}]: {type(e).__name__}: {e}")
+                break
+            pages_read += 1
 
-            live = j.get("liveStartAt")
-            if live and float(live) < cutoff:
-                stale += 1
-                continue
+            listings = [(k, v) for k, v in apollo.items()
+                        if k.startswith("JobListingSearchResult:")]
+            if not listings:
+                break
 
-            where = ", ".join(j.get("locationNames") or []) or (
-                "Remote" if j.get("remote") else "")
-            if not _WF_INDIA.search(where):
-                off_region += 1
-                continue
+            # A page number past the end does NOT 404 — it silently serves page 1
+            # again. Without this the loop would re-read page 1 to the page cap and
+            # the counts would look healthy while covering nothing.
+            page_ids = {str(v.get("id") or "") for _, v in listings} - {""}
+            if page_ids and page_ids <= city_ids:
+                break
+            city_ids |= page_ids
 
-            seen_ids.add(job_id)
-            slug = j.get("slug") or "job"
-            age_days = (time.time() - float(live)) / 86400 if live else None
-            hits.append({
-                "source": "Wellfound",
-                "job_id": "wf_" + job_id,
-                "title": (j.get("title") or "").strip(),
-                "company": _wellfound_company(apollo, key),
-                "location": where,
-                "posted": f"{age_days:.0f} days ago" if age_days is not None else "Recent",
-                "posted_dt": "",
-                "experience": "—",
-                "url": f"https://wellfound.com/jobs/{job_id}-{slug}",
-                # The JD travels with the listing; fetch_jd_text hands it straight back
-                # rather than making a second request.
-                "jd_inline": (j.get("description") or "").strip(),
-                "stated_experience": _wellfound_experience(j),
-            })
-        print(f"    wellfound [{city}]: +{len(hits) - before} "
+            for key, j in listings:
+                job_id = str(j.get("id") or "")
+                if not job_id or job_id in seen_ids:
+                    continue
+
+                live = j.get("liveStartAt")
+                if live and float(live) < cutoff:
+                    stale += 1
+                    continue
+
+                where = ", ".join(j.get("locationNames") or []) or (
+                    "Remote" if j.get("remote") else "")
+                if not _WF_INDIA.search(where):
+                    off_region += 1
+                    continue
+
+                seen_ids.add(job_id)
+                slug = j.get("slug") or "job"
+                age_days = (time.time() - float(live)) / 86400 if live else None
+                hits.append({
+                    "source": "Wellfound",
+                    "job_id": "wf_" + job_id,
+                    "title": (j.get("title") or "").strip(),
+                    "company": _wellfound_company(apollo, key),
+                    "location": where,
+                    "posted": f"{age_days:.0f} days ago" if age_days is not None else "Recent",
+                    "posted_dt": "",
+                    "experience": "—",
+                    "url": f"https://wellfound.com/jobs/{job_id}-{slug}",
+                    # The JD travels with the listing; fetch_jd_text hands it straight
+                    # back rather than making a second request.
+                    "jd_inline": (j.get("description") or "").strip(),
+                    "stated_experience": _wellfound_experience(j),
+                })
+            time.sleep(1)
+
+        print(f"    wellfound [{city}]: +{len(hits) - before_city} across {len(city_ids)} listing(s) "
               f"({stale} older than {WELLFOUND_MAX_AGE_DAYS}d, {off_region} outside India)")
-        time.sleep(1)
 
-    print(f"  [Wellfound] {len(hits)} listing(s) across {len(WELLFOUND_CITIES)} page(s)")
+    print(f"  [Wellfound] {len(hits)} listing(s) across {pages_read} page(s)")
     return hits
 
 

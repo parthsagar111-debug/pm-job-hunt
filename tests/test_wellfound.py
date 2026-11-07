@@ -106,11 +106,104 @@ def test_the_jd_arrives_inline_and_costs_no_request(one_page, monkeypatch):
     assert not core.is_garbage_jd(jd)
 
 
-def test_one_request_per_city_and_no_per_job_fetch(one_page):
+def test_no_per_job_fetch_however_many_pages(one_page):
+    """The requests are per page, never per job — that is what keeps the source free."""
     calls = one_page(page([listing(str(i), "Product Manager", ["Pune"]) for i in range(20)]))
     jobs = core.fetch_wellfound()
-    assert len(calls) == len(core.WELLFOUND_CITIES)   # one page each, nothing per job
-    assert len(jobs) == 20                            # deduped by id across pages
+    assert len(jobs) == 20                              # deduped by id across pages
+    assert len(calls) <= len(core.WELLFOUND_CITIES) * core.WELLFOUND_MAX_PAGES
+    assert all(c.startswith("https://wellfound.com/role/l/") for c in calls)
+
+
+# ── pagination (2026-11-07)
+#
+# Page 1 is a small slice: of 35 unique India PM listings inside the 30-day window,
+# only 11 were on page 1. Reading page 1 alone missed 69% of the source — Avacasa
+# and the Daloopa pair among them — and the gap was invisible because the run
+# reported "0 new" perfectly truthfully about the slice it had read.
+
+def _paged(monkeypatch, pages_by_city):
+    """Serve a different document per (city, page); record what was asked for."""
+    calls = []
+
+    def fake(url, **kw):
+        calls.append(url)
+        city = url.split("/product-manager/")[1].split("?")[0]
+        n = int(url.split("page=")[1]) if "page=" in url else 1
+        pages = pages_by_city.get(city, [])
+        return _Resp(pages[n - 1] if n <= len(pages) else pages[0])   # past the end -> page 1
+
+    monkeypatch.setattr(core, "_LI_GET", fake)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    return calls
+
+
+def test_listings_past_page_one_are_collected(monkeypatch):
+    p1 = page([listing("a", "Product Manager", ["Pune"])])
+    p2 = page([listing("b", "Senior Product Manager", ["Pune"])])
+    p3 = page([listing("c", "Group Product Manager", ["Pune"])])
+    _paged(monkeypatch, {c: [p1, p2, p3] for c in core.WELLFOUND_CITIES})
+    assert {j["job_id"] for j in core.fetch_wellfound()} == {"wf_a", "wf_b", "wf_c"}
+
+
+def test_a_fresh_listing_deep_in_the_pages_is_not_missed(monkeypatch):
+    """Depth is not just backlog: a 1.4-day-old listing sat on page 4 in the probe,
+    so stopping at the first page without fresh rows would drop live jobs."""
+    stale = [page([listing(f"old{p}", "Product Manager", ["Pune"], age_days=25)])
+             for p in range(3)]      # distinct pages, as the real ones are
+    fresh = page([listing("new", "Product Manager", ["Pune"], age_days=1)])
+    _paged(monkeypatch, {c: stale + [fresh] for c in core.WELLFOUND_CITIES})
+    assert "wf_new" in {j["job_id"] for j in core.fetch_wellfound()}
+
+
+def test_a_page_past_the_end_does_not_restart_the_city(monkeypatch):
+    """Wellfound serves page 1 again rather than 404ing, so the loop has to notice
+    it is being handed what it already read — otherwise every city burns the full
+    page budget re-reading page 1 and the counts still look healthy."""
+    p1 = page([listing("a", "Product Manager", ["Pune"])])
+    p2 = page([listing("b", "Product Manager", ["Pune"])])
+    calls = _paged(monkeypatch, {c: [p1, p2] for c in core.WELLFOUND_CITIES})
+    jobs = core.fetch_wellfound()
+
+    per_city = len(calls) / len(core.WELLFOUND_CITIES)
+    assert per_city == 3            # page 1, page 2, then page 3 = page 1 again -> stop
+    assert per_city < core.WELLFOUND_MAX_PAGES
+    assert {j["job_id"] for j in jobs} == {"wf_a", "wf_b"}
+
+
+def test_the_page_budget_is_bounded(monkeypatch):
+    """Every page distinct: the cap, not the data, has to stop it."""
+    pages = [page([listing(f"j{n}", "Product Manager", ["Pune"])]) for n in range(50)]
+    calls = _paged(monkeypatch, {c: pages for c in core.WELLFOUND_CITIES})
+    core.fetch_wellfound()
+    assert len(calls) == len(core.WELLFOUND_CITIES) * core.WELLFOUND_MAX_PAGES
+
+
+def test_the_budget_is_deep_enough_for_what_was_measured():
+    """11 of 35 listings were on page 1; page 5 still held one that pages 1-4 did not."""
+    assert core.WELLFOUND_MAX_PAGES >= 5
+
+
+def test_an_empty_page_ends_the_city(monkeypatch):
+    p1 = page([listing("a", "Product Manager", ["Pune"])])
+    calls = _paged(monkeypatch, {c: [p1, page([])] for c in core.WELLFOUND_CITIES})
+    core.fetch_wellfound()
+    assert len(calls) == len(core.WELLFOUND_CITIES) * 2
+
+
+def test_one_bad_page_does_not_cost_the_remaining_cities(monkeypatch):
+    seen = {"n": 0}
+    html = page([listing("a", "Product Manager", ["Pune"])])
+
+    def fake(url, **kw):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return _Resp("", status=503)
+        return _Resp(html)
+
+    monkeypatch.setattr(core, "_LI_GET", fake)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    assert core.fetch_wellfound()        # the other cities still produced their listing
 
 
 def test_listings_older_than_the_window_are_dropped(one_page):
