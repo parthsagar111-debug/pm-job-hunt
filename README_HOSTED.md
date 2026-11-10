@@ -116,6 +116,36 @@ parsing/pagination, the sponsor-register matcher and the Sheets helpers. CI runs
 every push to master. See TECHNICAL_BRIEF.md for the architecture and the
 measured LinkedIn rate limits.
 
+### Running locally on Windows / Ubuntu (dual-boot)
+The same folder is used from both OSes (`E:\filesscripts` on Windows,
+`/mnt/e/filesscripts` on Ubuntu). Nothing in the code hardcodes either path —
+everything resolves relative to the script, and secrets come from env vars
+(`ANTHROPIC_API_KEY`, `GOOGLE_SERVICE_ACCOUNT_FILE`, …) with a local `config.py` /
+`service_account.json` fallback.
+
+**Ubuntu** — the venv lives outside the repo (`~/.venvs/pm-job-hunt`, override with
+`PM_JOB_HUNT_VENV`) so it never collides with a Windows venv:
+```bash
+./setup_venv.sh
+./run_tests.sh            # extra args go to pytest, e.g. ./run_tests.sh -k sponsor
+```
+
+**Windows** — any venv you create inside the repo (`.venv/`, `venv/`, `env/`) is
+git-ignored:
+```bat
+py -m venv .venv
+.venv\Scripts\pip install -r requirements_hosted.txt -r requirements_dev.txt
+.venv\Scripts\python -m pytest tests -q
+```
+
+`.gitattributes` keeps `*.sh` as LF and `*.bat` as CRLF whichever OS checks them out.
+The only Windows-specific code (UTF-8 console fix in `core_eval_hosted.py`) is guarded
+by `sys.platform == "win32"`.
+
+**Scheduling is not on this laptop.** The feeds run on GitHub Actions; cron-job.org
+triggers them via `workflow_dispatch` (see "Scheduling the other feeds" above), so
+which OS the laptop is booted into doesn't matter.
+
 ## GitHub Actions minutes
 The repo is public, so standard GitHub-hosted runners are free with no monthly
 minute cap. If the repo is ever made private, the free tier is 2,000 min/month —
