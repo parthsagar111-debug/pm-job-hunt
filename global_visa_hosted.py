@@ -50,7 +50,8 @@ from core_eval_hosted import (
 )
 from gulf_eval_hosted import is_gulf_location
 from sponsor_registry import SponsorRegistry
-from sheets_writer import save_visa_jobs, load_seen_urls, TAB_LISTINGS, TAB_NO_SPONSOR
+from sheets_writer import (save_visa_jobs, load_seen_urls, load_pending_jobs, save_pending_jobs,
+                           TAB_LISTINGS, TAB_NO_SPONSOR)
 from ntfy_notify import push
 
 SPREADSHEET_ID = os.environ.get("GLOBAL_VISA_SPREADSHEET_ID", "")
@@ -195,6 +196,58 @@ def collect_jobs(seen: set[str]) -> list[dict]:
     print(f"\n  Collected: {collector.summary()}")
     return collector.jobs
 
+# ─────────────────────────────────────────────
+# PENDING QUEUE — jobs whose JD LinkedIn wouldn't serve
+# ─────────────────────────────────────────────
+# A job only goes on the queue when its JD fetch failed BECAUSE of throttling (a
+# give-up on 429s, or the circuit breaker already open). A plain miss — 404 for a
+# pulled posting, a page with no description block — is a real answer and isn't
+# retried. And the queue is bounded both ways, so a posting that's gone quiet
+# can't ride along forever.
+PENDING_MAX_ATTEMPTS = 4      # deferred this many times → drop it
+PENDING_MAX_AGE_DAYS = 7      # first deferred longer ago than this → drop it
+
+
+def merge_pending(found: list[dict], pending: list[dict], seen: set[str]) -> list[dict]:
+    """Queued jobs first (they're older), then this run's finds. A queued job that's
+    already in the Sheet or was found again by this run's search is not duplicated —
+    but it keeps its attempt count and first-deferred date if it's re-found."""
+    by_url = {j["url"]: j for j in found}
+    first  = []
+    for p in pending:
+        url = p.get("url", "")
+        if not url or url in seen:
+            continue
+        if url in by_url:
+            by_url[url].setdefault("deferred", p.get("deferred", ""))
+            by_url[url].setdefault("attempts", p.get("attempts", 0))
+            continue
+        first.append(p)
+        by_url[url] = p        # also guards against the queue holding a URL twice
+    return first + found
+
+
+def prune_pending(jobs: list[dict], today: datetime) -> tuple[list[dict], int]:
+    """(jobs still worth retrying, how many were dropped as too old / too tried)."""
+    keep, dropped = [], 0
+    for j in jobs:
+        try:
+            age = (today - datetime.strptime(j.get("deferred", ""), "%Y-%m-%d")).days
+        except ValueError:
+            age = 0
+        if j.get("attempts", 0) >= PENDING_MAX_ATTEMPTS or age > PENDING_MAX_AGE_DAYS:
+            dropped += 1
+        else:
+            keep.append(j)
+    return keep, dropped
+
+
+def defer(job: dict, today: datetime) -> dict:
+    if not job.get("deferred"):
+        job["deferred"] = today.strftime("%Y-%m-%d")
+    job["attempts"] = job.get("attempts", 0) + 1
+    return job
+
 # JD fetch lives in core as fetch_jd_guest() — all three feeds share it now.
 
 # "relocation" is deliberately absent: relocation alone doesn't qualify, so a JD
@@ -317,22 +370,50 @@ def main() -> None:
         print(f"  ERROR: could not load dedup state from Sheet ({e}). Aborting.")
         sys.exit(1)
 
+    # A failed read must not wipe the queue: pending_loaded=False makes the save at the
+    # end append instead of rewrite.
+    try:
+        pending = load_pending_jobs(SPREADSHEET_ID)
+        pending_loaded = True
+    except Exception as e:
+        print(f"  [sheets] Warning: couldn't read the Pending JDs tab ({e}) — continuing without it")
+        pending, pending_loaded = [], False
+
     print("\n  [1/2] Searching LinkedIn per country...")
-    jobs = collect_jobs(seen)
-    print(f"\n  {len(jobs)} new product role(s) after {(time.time()-T0)/60:.0f} min of searching")
+    found = collect_jobs(seen)
+    print(f"\n  {len(found)} new product role(s) after {(time.time()-T0)/60:.0f} min of searching")
+    jobs = merge_pending(found, pending, seen)
+    n_from_queue = len(jobs) - len(found)
+    if pending:
+        print(f"  + {n_from_queue} job(s) carried over from the Pending JDs queue "
+              f"({len(pending) - n_from_queue} of the {len(pending)} queued already handled)")
 
     print("\n  [2/2] Fetching JDs and checking visa support...")
     keepers, rejected, counts = [], [], Counter()
     registry = SponsorRegistry()
+    today    = datetime.now()
+    deferred: list[dict] = []
     jd_ok = jd_fail = 0
     for i, job in enumerate(jobs, 1):
         if time.time() - T0 > MAX_RUNTIME_S:
+            deferred.extend(defer(j, today) for j in jobs[i-1:])
             print(f"  ⏱ runtime limit reached at {i}/{len(jobs)} — saving what's done; "
-                  f"the rest will be picked up next run.", flush=True)
+                  f"the other {len(jobs) - i + 1} go on the Pending JDs queue.", flush=True)
             break
+        if LI_LIMITER.is_blocked():
+            deferred.extend(defer(j, today) for j in jobs[i-1:])
+            print(f"  ⚠️  LinkedIn is refusing this runner — stopping JD fetches at {i}/{len(jobs)}; "
+                  f"the other {len(jobs) - i + 1} go on the Pending JDs queue.", flush=True)
+            break
+        giveups_before = LI_LIMITER.giveups
         jd = fetch_jd_guest(job["job_id"])
         if len(jd) < 100:
-            jd_fail += 1
+            # Refused (give-up on 429s, or the breaker tripped on this very fetch) →
+            # retry later. Anything else — 404, no description block — is an answer.
+            if LI_LIMITER.giveups > giveups_before or LI_LIMITER.is_blocked():
+                deferred.append(defer(job, today))
+            else:
+                jd_fail += 1
             continue
         jd_ok += 1
         excerpt = visa_excerpt(jd)
@@ -374,7 +455,7 @@ def main() -> None:
     print(f"  Sponsor registers: {n_licensed} job(s) at a licensed UK/NL sponsor, "
           f"{counts['licensed sponsor, JD silent']} of them with a JD that never mentions visas"
           + (f" | {'; '.join(registry.errors)}" if registry.errors else ""))
-    print(f"  JDs: {jd_ok} fetched, {jd_fail} failed  |  "
+    print(f"  JDs: {jd_ok} fetched, {jd_fail} failed, {len(deferred)} deferred  |  "
           f"visa lines found: {sum(counts[k] for k in ('YES','CONDITIONAL','NO','ERROR'))}  |  "
           f"YES {counts['YES']}  CONDITIONAL {counts['CONDITIONAL']}  NO {counts['NO']}  "
           f"ERROR {counts['ERROR']}")
@@ -383,16 +464,44 @@ def main() -> None:
     n_new, n_no = ((0, 0) if not (keepers or rejected)
                    else save_visa_jobs(SPREADSHEET_ID, keepers, rejected))
 
+    # Rewrite the queue: everything loaded from it was either handled above or is in
+    # `deferred` again with attempts+1. Skipped entirely when there was no queue and
+    # nothing to add, so a healthy run costs no extra Sheets writes.
+    queue, n_dropped = prune_pending(deferred, today)
+    if n_dropped:
+        print(f"  Pending JDs: dropped {n_dropped} job(s) deferred {PENDING_MAX_ATTEMPTS}+ times "
+              f"or for over {PENDING_MAX_AGE_DAYS} days")
+    if pending or queue:
+        try:
+            n_q = save_pending_jobs(SPREADSHEET_ID, queue, replace=pending_loaded)
+            print(f"  Pending JDs: {n_q} job(s) queued for the next run")
+        except Exception as e:
+            print(f"  [sheets] ERROR: couldn't save the Pending JDs queue ({e}) — "
+                  f"{len(queue)} deferred job(s) will be lost")
+
+    blocked = LI_LIMITER.is_blocked()
     n_yes  = sum(1 for j in keepers if j["visa_verdict"] == "YES")
     n_cond = len(keepers) - n_yes
-    push("Global Visa PM — run complete",
-         f"{n_new} new listing(s): {n_yes} sponsor, {n_cond} maybe\nCheck your Google Sheet for details.",
-         "high" if n_new else "default")
+    if blocked:
+        push("Global Visa PM — LinkedIn blocked the runner",
+             f"{n_new} new listing(s): {n_yes} sponsor, {n_cond} maybe.\n"
+             f"Only {jd_ok} of {len(jobs)} JDs read; {len(queue)} queued for the next run.",
+             "high")
+    else:
+        push("Global Visa PM — run complete",
+             f"{n_new} new listing(s): {n_yes} sponsor, {n_cond} maybe\nCheck your Google Sheet for details.",
+             "high" if n_new else "default")
 
     print(f"\n{'='*60}")
     print(f"  Done in {(time.time()-T0)/60:.0f} min. New rows: {n_new} "
           f"({n_yes} YES, {n_cond} CONDITIONAL)")
+    if blocked:
+        print(f"  NOTE: LinkedIn blocked this runner — {jd_ok} of {len(jobs)} JDs read, "
+              f"{len(queue)} queued for the next run. Marking the run failed.")
     print(f"{'='*60}\n")
+
+    if blocked:
+        sys.exit(1)   # results above are saved; this only stops a blocked run looking green
 
 if __name__ == "__main__":
     main()

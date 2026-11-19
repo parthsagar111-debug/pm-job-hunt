@@ -220,6 +220,68 @@ def load_seen_urls(spreadsheet_id: str, tabs: tuple = (TAB_APPLY, TAB_MAYBE, TAB
     return _load_seen_urls(sh, tabs=tabs)
 
 
+# Global visa feed: jobs a run found but couldn't read the JD for because LinkedIn
+# was refusing the runner. Before 2026-11-19 they were dropped on the floor — 1,164
+# of them across three runs on 16-19 Nov — and since each run only searches the last
+# 24h, the next run never saw most of them again. This tab is the hand-off: whatever
+# is here is fetched first on the next run, then the tab is rewritten with whatever
+# is still outstanding. It's a queue, not a record — rows come and go.
+TAB_PENDING     = "Pending JDs"
+HEADERS_PENDING = ["Deferred", "Attempts", "Title", "Company", "Location", "Posted", "URL"]
+
+
+def load_pending_jobs(spreadsheet_id: str) -> list[dict]:
+    """Job dicts from the Pending JDs tab ([] if the tab doesn't exist). Raises on a
+    Sheets failure so the caller can tell "empty queue" from "couldn't read it"."""
+    client = _get_client()
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
+    try:
+        ws = sh.worksheet(TAB_PENDING)
+    except gspread.WorksheetNotFound:
+        return []
+    jobs = []
+    for rec in _with_retry(ws.get_all_records):
+        url = _clean_url(str(rec.get("URL", "")))
+        m   = re.search(r"(\d{8,})", url)
+        if not m:
+            continue
+        try:
+            attempts = int(rec.get("Attempts") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        jobs.append({
+            "source": "LinkedIn Global", "job_id": "li_" + m.group(1), "url": url,
+            "title": str(rec.get("Title", "")), "company": str(rec.get("Company", "")),
+            "location": str(rec.get("Location", "")), "posted": str(rec.get("Posted", "")),
+            "deferred": str(rec.get("Deferred", "")), "attempts": attempts,
+        })
+    return jobs
+
+
+def save_pending_jobs(spreadsheet_id: str, jobs: list[dict], replace: bool = True) -> int:
+    """Write the outstanding queue. replace=True rewrites the tab (the normal case: the
+    run loaded the old queue and `jobs` is everything still outstanding). replace=False
+    only appends — used when the load failed, so rows we never read aren't wiped."""
+    client = _get_client()
+    sh     = _with_retry(client.open_by_key, spreadsheet_id)
+    try:
+        ws = sh.worksheet(TAB_PENDING)
+    except gspread.WorksheetNotFound:
+        if not jobs:
+            return 0          # nothing queued and no tab: don't create an empty one
+        ws = _ensure_tab(sh, TAB_PENDING, HEADERS_PENDING)
+    rows = [[j.get("deferred", ""), j.get("attempts", 1), j.get("title", ""),
+             j.get("company", ""), j.get("location", ""), j.get("posted", ""),
+             _clean_url(j.get("url", ""))] for j in jobs]
+    if replace:
+        _with_retry(ws.clear)
+        _with_retry(ws.update, values=[HEADERS_PENDING] + rows, range_name="A1",
+                    value_input_option="RAW")
+    elif rows:
+        _with_retry(ws.append_rows, rows, value_input_option="RAW")
+    return len(rows)
+
+
 ROW_HEIGHT_PX = 21   # Sheets' default single-line row height
 
 def _compact_rows(sh: gspread.Spreadsheet, worksheets: list) -> None:
