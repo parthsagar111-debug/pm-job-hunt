@@ -396,6 +396,10 @@ class RateLimiter:
         self._clean   = 0
         self.giveups  = 0      # consecutive requests refused after all three attempts
         self.backoff_s = 0.0   # cumulative seconds slept waiting on 429s
+        # The backoff budget is per PHASE: start_phase() moves the baseline, so a
+        # search that used up its allowance doesn't leave the JD phase none.
+        self.budget_s        = LI_BACKOFF_BUDGET_S
+        self._phase_backoff0 = 0.0
 
     def acquire(self):
         now  = time.time()
@@ -432,11 +436,27 @@ class RateLimiter:
         """LinkedIn is refusing this runner, not merely pacing it.
 
         Either a streak of outright refusals — a hard block, caught in minutes — or a
-        run that has spent more than LI_BACKOFF_BUDGET_S asleep on 429s, which is the
+        phase that has spent more than its budget asleep on 429s, which is the
         slow version of the same thing.
         """
         return (self.giveups >= LI_GIVEUP_LIMIT
-                or self.backoff_s >= LI_BACKOFF_BUDGET_S)
+                or self.phase_backoff_s >= self.budget_s)
+
+    @property
+    def phase_backoff_s(self) -> float:
+        """Backoff spent since the last start_phase() (or since the run began)."""
+        return self.backoff_s - self._phase_backoff0
+
+    def start_phase(self, budget_s: float, label: str) -> None:
+        """Give the next phase of a run its own backoff allowance.
+
+        The give-up streak is NOT reset: a hard block is a hard block whichever
+        phase it straddles. Only the slow-throttling budget starts over.
+        """
+        self._phase_backoff0 = self.backoff_s
+        self.budget_s        = budget_s
+        print(f"  [rate] {label}: {budget_s/60:.0f} min backoff budget "
+              f"({self.backoff_s/60:.0f} min spent so far)")
 
     def reward(self):
         self.giveups = 0       # a success means we are being served again

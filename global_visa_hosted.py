@@ -204,6 +204,21 @@ def collect_jobs(seen: set[str]) -> list[dict]:
 # pulled posting, a page with no description block — is a real answer and isn't
 # retried. And the queue is bounded both ways, so a posting that's gone quiet
 # can't ride along forever.
+# The JD phase gets its own backoff allowance instead of inheriting what the search
+# left. On a throttled day the search alone spends the whole 30 minutes — 16 Nov
+# 15:45, 17 Nov 05:45 and 19 Nov 10:12 all reached the JD phase with 24-39 429s
+# behind them and read 61, 31 and 13 JDs before the breaker tripped. Starting slower
+# wouldn't have avoided it: each of those runs got its first 429 in the first six
+# seconds and then sat at the 0.25 floor for the rest of the run, still refused
+# about one request in seven. That's this IP being flagged, not our pace; clean days
+# (15-16 Nov) ran at 1.0 req/s with zero 429s.
+#
+# Throttled is still mostly served, though. 19 Nov 08:35 read 313 JDs on ~26 min of
+# backoff, about 12 per minute, so an hour covers ~700 — one throttled day's finds
+# (600-650) plus some of the queue. A real block is still caught by the give-up
+# streak, which is not reset between phases.
+LI_JD_BACKOFF_BUDGET_S = 60 * 60
+
 PENDING_MAX_ATTEMPTS = 4      # deferred this many times → drop it
 PENDING_MAX_AGE_DAYS = 7      # first deferred longer ago than this → drop it
 
@@ -389,6 +404,7 @@ def main() -> None:
               f"({len(pending) - n_from_queue} of the {len(pending)} queued already handled)")
 
     print("\n  [2/2] Fetching JDs and checking visa support...")
+    LI_LIMITER.start_phase(LI_JD_BACKOFF_BUDGET_S, "JD phase")
     keepers, rejected, counts = [], [], Counter()
     registry = SponsorRegistry()
     today    = datetime.now()

@@ -90,8 +90,11 @@ def run(monkeypatch):
     monkeypatch.setattr(gv, "save_pending_jobs", save_q)
     monkeypatch.setattr(gv, "push", lambda t, m, p="default": out.__setitem__("push", t))
 
-    def go(found, fetch, pending=(), pending_error=None):
-        monkeypatch.setattr(gv, "collect_jobs", lambda seen: [dict(j) for j in found])
+    def go(found, fetch, pending=(), pending_error=None, search_backoff=0):
+        def collect(seen):
+            lim.record_backoff(search_backoff)    # what the search phase cost
+            return [dict(j) for j in found]
+        monkeypatch.setattr(gv, "collect_jobs", collect)
         def load(sid):
             if pending_error:
                 raise pending_error
@@ -114,7 +117,7 @@ def test_a_block_mid_run_queues_the_rest_and_fails_the_run(run):
     def fetch(jid, lim):
         if jid.endswith("2"):                 # 2nd job: the give-up that trips the breaker
             lim.giveups += 1
-            lim.backoff_s = core.LI_BACKOFF_BUDGET_S
+            lim.backoff_s += gv.LI_JD_BACKOFF_BUDGET_S
             return ""
         return JD
     out = run([job(1), job(2), job(3), job(4)], fetch)
@@ -158,3 +161,38 @@ def test_an_unreadable_queue_is_appended_to_not_overwritten(run):
     out = run([job(1)], fetch, pending_error=RuntimeError("503"))
     assert out["replace"] is False
     assert [j["url"] for j in out["queue"]] == [job(1)["url"]]
+
+
+# ── the JD phase gets its own backoff budget (2026-11-19) ──────────────────
+
+def test_a_new_phase_gets_a_fresh_backoff_budget():
+    lim = core.RateLimiter()
+    lim.record_backoff(core.LI_BACKOFF_BUDGET_S)
+    assert lim.is_blocked()                       # search used up its 30 min
+    lim.start_phase(gv.LI_JD_BACKOFF_BUDGET_S, "JD phase")
+    assert not lim.is_blocked()                   # the JD phase starts clean
+    lim.record_backoff(gv.LI_JD_BACKOFF_BUDGET_S - 1)
+    assert not lim.is_blocked()
+    lim.record_backoff(1)
+    assert lim.is_blocked()
+    assert lim.backoff_s == core.LI_BACKOFF_BUDGET_S + gv.LI_JD_BACKOFF_BUDGET_S  # total still reported
+
+
+def test_a_hard_block_carries_across_phases():
+    """The give-up streak is the real-block signal; a new phase must not hide it."""
+    lim = core.RateLimiter()
+    for _ in range(core.LI_GIVEUP_LIMIT):
+        lim.record_giveup()
+    lim.start_phase(gv.LI_JD_BACKOFF_BUDGET_S, "JD phase")
+    assert lim.is_blocked()
+
+
+def test_a_search_that_spent_its_budget_still_reads_jds(run):
+    """19 Nov 10:12: the search reached the JD phase with 30 min of backoff spent and
+    read 13 of 615 JDs. With its own budget the JD phase reads them all."""
+    def fetch(jid, lim):
+        lim.reward()
+        return JD
+    out = run([job(1), job(2), job(3)], fetch, search_backoff=core.LI_BACKOFF_BUDGET_S)
+    assert out["saved"] == [job(1)["url"], job(2)["url"], job(3)["url"]]
+    assert out["queue"] is None and out["exit"] == 0
