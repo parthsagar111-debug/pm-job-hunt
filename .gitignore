@@ -3,3 +3,8 @@ __pycache__/
 *_debug.html
 service_account.json
 config.py
+
+# Virtualenvs (Linux one lives in ~/.venvs/pm-job-hunt; never commit a Windows one)
+.venv/
+venv/
+env/
