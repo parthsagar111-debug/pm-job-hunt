@@ -113,19 +113,71 @@ def run(monkeypatch):
 JD = "We sponsor visas for this role.\n" + "x" * 200
 
 
-def test_a_block_mid_run_queues_the_rest_and_fails_the_run(run):
+def test_a_spent_budget_mid_run_queues_the_rest_but_stays_green(run):
+    """19 Nov 12:42: read 340 of 695, spent the JD budget, queued the rest. That run
+    did its job and exited 1 anyway; a spent budget alone is throttling, not a block."""
     def fetch(jid, lim):
-        if jid.endswith("2"):                 # 2nd job: the give-up that trips the breaker
+        if jid.endswith("2"):                 # 2nd job: the give-up that spends the budget
             lim.giveups += 1
             lim.backoff_s += gv.LI_JD_BACKOFF_BUDGET_S
             return ""
+        lim.reward()
         return JD
     out = run([job(1), job(2), job(3), job(4)], fetch)
     assert out["saved"] == [job(1)["url"]]
     assert [j["url"] for j in out["queue"]] == [job(2)["url"], job(3)["url"], job(4)["url"]]
     assert all(j["attempts"] == 1 for j in out["queue"])
+    assert out["exit"] == 0
+    assert "throttled" in out["push"]
+
+
+def test_a_spent_budget_that_read_almost_nothing_fails(run):
+    """19 Nov 10:12 read 13 of 615 — that one should be red."""
+    def fetch(jid, lim):
+        if jid.endswith("01"):                # the very first JD spends the budget
+            lim.giveups += 1
+            lim.backoff_s += gv.LI_JD_BACKOFF_BUDGET_S
+            return ""
+        return JD
+    out = run([job(n) for n in range(1, 21)], fetch)
+    assert out["saved"] is None or out["saved"] == []
+    assert len(out["queue"]) == 20
     assert out["exit"] == 1
     assert "blocked" in out["push"]
+
+
+def test_a_give_up_streak_fails_however_much_was_read(run):
+    def fetch(jid, lim):
+        n = int(jid[-2:])
+        if n >= 9:                            # first 8 read, then refused outright
+            lim.giveups += 1
+            return ""
+        lim.reward()
+        return JD
+    out = run([job(n) for n in range(1, 21)], fetch)
+    assert len(out["saved"]) == 8
+    assert out["exit"] == 1
+    assert "blocked" in out["push"]
+
+
+def test_run_outcome_thresholds():
+    assert gv.run_outcome(340, 695, 354, hard_blocked=False) == "partial"
+    assert gv.run_outcome(13, 615, 602, hard_blocked=False) == "blocked"
+    assert gv.run_outcome(500, 500, 0, hard_blocked=False) == "ok"
+    assert gv.run_outcome(500, 505, 5, hard_blocked=True) == "blocked"
+
+
+def test_block_reason_names_the_real_cause():
+    lim = core.RateLimiter()
+    lim.start_phase(gv.LI_JD_BACKOFF_BUDGET_S, "JD phase")
+    lim.record_giveup()
+    lim.record_backoff(62 * 60)
+    msg = lim.block_reason()
+    assert "62 min" in msg and "60 min budget" in msg
+    assert "in a row" not in msg and "blocked" not in msg
+    for _ in range(core.LI_GIVEUP_LIMIT):
+        lim.record_giveup()
+    assert "in a row" in lim.block_reason() and "blocked" in lim.block_reason()
 
 
 def test_a_single_429_give_up_is_queued_but_a_404_is_not(run):

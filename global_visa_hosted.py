@@ -257,6 +257,27 @@ def prune_pending(jobs: list[dict], today: datetime) -> tuple[list[dict], int]:
     return keep, dropped
 
 
+# Below this share of attempted JDs actually read, a deferring run counts as blocked
+# even without a give-up streak. 19 Nov 10:12 read 13 of 615 (2%) — useless, should
+# be red. 19 Nov 12:42 read 340 of 695 (49%) and queued the rest — a slow run that
+# did its job, which the first version of this check marked failed anyway.
+MIN_READ_SHARE = 0.10
+
+
+def run_outcome(jd_ok: int, attempted: int, n_deferred: int, hard_blocked: bool) -> str:
+    """"blocked" (exit 1), "partial" (throttled, queued the rest, still green) or "ok".
+
+    Only a real block fails the run: LinkedIn refusing outright (the give-up streak),
+    or a run that deferred work and read almost nothing. Running out of backoff
+    budget on its own is not a failure — the queue exists to carry the rest over.
+    """
+    if hard_blocked:
+        return "blocked"
+    if n_deferred:
+        return "blocked" if jd_ok < MIN_READ_SHARE * attempted else "partial"
+    return "ok"
+
+
 def defer(job: dict, today: datetime) -> dict:
     if not job.get("deferred"):
         job["deferred"] = today.strftime("%Y-%m-%d")
@@ -418,7 +439,7 @@ def main() -> None:
             break
         if LI_LIMITER.is_blocked():
             deferred.extend(defer(j, today) for j in jobs[i-1:])
-            print(f"  ⚠️  LinkedIn is refusing this runner — stopping JD fetches at {i}/{len(jobs)}; "
+            print(f"  ⚠️  Stopping JD fetches at {i}/{len(jobs)} ({LI_LIMITER.block_reason()}); "
                   f"the other {len(jobs) - i + 1} go on the Pending JDs queue.", flush=True)
             break
         giveups_before = LI_LIMITER.giveups
@@ -495,14 +516,20 @@ def main() -> None:
             print(f"  [sheets] ERROR: couldn't save the Pending JDs queue ({e}) — "
                   f"{len(queue)} deferred job(s) will be lost")
 
-    blocked = LI_LIMITER.is_blocked()
+    outcome = run_outcome(jd_ok, jd_ok + jd_fail + len(deferred), len(deferred),
+                          LI_LIMITER.hard_blocked)
     n_yes  = sum(1 for j in keepers if j["visa_verdict"] == "YES")
     n_cond = len(keepers) - n_yes
-    if blocked:
+    if outcome == "blocked":
         push("Global Visa PM — LinkedIn blocked the runner",
              f"{n_new} new listing(s): {n_yes} sponsor, {n_cond} maybe.\n"
              f"Only {jd_ok} of {len(jobs)} JDs read; {len(queue)} queued for the next run.",
              "high")
+    elif outcome == "partial":
+        push("Global Visa PM — run complete (throttled)",
+             f"{n_new} new listing(s): {n_yes} sponsor, {n_cond} maybe.\n"
+             f"{jd_ok} of {len(jobs)} JDs read; {len(queue)} queued for the next run.",
+             "high" if n_new else "default")
     else:
         push("Global Visa PM — run complete",
              f"{n_new} new listing(s): {n_yes} sponsor, {n_cond} maybe\nCheck your Google Sheet for details.",
@@ -511,12 +538,15 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"  Done in {(time.time()-T0)/60:.0f} min. New rows: {n_new} "
           f"({n_yes} YES, {n_cond} CONDITIONAL)")
-    if blocked:
+    if outcome == "blocked":
         print(f"  NOTE: LinkedIn blocked this runner — {jd_ok} of {len(jobs)} JDs read, "
               f"{len(queue)} queued for the next run. Marking the run failed.")
+    elif outcome == "partial":
+        print(f"  NOTE: throttled — {jd_ok} of {len(jobs)} JDs read, {len(queue)} queued "
+              f"for the next run.")
     print(f"{'='*60}\n")
 
-    if blocked:
+    if outcome == "blocked":
         sys.exit(1)   # results above are saved; this only stops a blocked run looking green
 
 if __name__ == "__main__":
