@@ -279,9 +279,7 @@ def _li_get_with_retry(url: str):   # -> curl_cffi/requests Response | None
     LI_LIMITER.record_giveup()
     print(f"  [LinkedIn] ERROR: gave up after 3 attempts (rate limited)")
     if LI_LIMITER.is_blocked():
-        print(f"  [LinkedIn] {LI_LIMITER.giveups} refused in a row after "
-              f"{LI_LIMITER.backoff_s/60:.0f} min of backoff — this runner's IP is being "
-              f"blocked, not throttled. Giving up on LinkedIn for this run.")
+        print(f"  [LinkedIn] {LI_LIMITER.block_reason()}. Stopping LinkedIn requests.")
     return None
 
 def _parse_li_cards(html: str) -> tuple[list[dict], set[str]]:
@@ -439,8 +437,27 @@ class RateLimiter:
         phase that has spent more than its budget asleep on 429s, which is the
         slow version of the same thing.
         """
-        return (self.giveups >= LI_GIVEUP_LIMIT
-                or self.phase_backoff_s >= self.budget_s)
+        return self.hard_blocked or self.phase_backoff_s >= self.budget_s
+
+    @property
+    def hard_blocked(self) -> bool:
+        """LI_GIVEUP_LIMIT requests in a row refused after every attempt: the IP is
+        refused outright. Distinct from a spent backoff budget, which means LinkedIn
+        is still serving most requests, just too slowly to keep going."""
+        return self.giveups >= LI_GIVEUP_LIMIT
+
+    def block_reason(self) -> str:
+        """Why is_blocked() is true, in words — the two causes need different reading.
+        Before 2026-11-19 both printed "N refused in a row … IP is being blocked",
+        which for a spent budget said "1 refused in a row" and claimed a block that
+        wasn't one."""
+        if self.hard_blocked:
+            return (f"{self.giveups} requests in a row refused after every retry — "
+                    f"this runner's IP is blocked")
+        if self.phase_backoff_s >= self.budget_s:
+            return (f"{self.phase_backoff_s/60:.0f} min spent waiting on 429s, past the "
+                    f"{self.budget_s/60:.0f} min budget — throttled too hard to continue")
+        return "not blocked"
 
     @property
     def phase_backoff_s(self) -> float:
